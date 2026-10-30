@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Zalie
+GenericName=HTTP Client
+Comment=A light, fast and friendly HTTP client
+Exec=@ZALIE_DESKTOP_EXEC@ %F
+Icon=zalie
+Terminal=false
+Categories=Development;WebDevelopment;
+Keywords=http;rest;api;curl;postman;bruno;
+# Matches the WM_CLASS of the window (src/app/main.cpp): how the desktop shows Zalie's icon in its task bar.
+StartupWMClass=Zalie

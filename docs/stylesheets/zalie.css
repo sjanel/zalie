@@ -1,0 +1,40 @@
+/* Zalie colors: "Coton" cream white and a terracotta coral accent (see src/ui/src/theme.cpp). */
+:root > * {
+  --md-primary-fg-color: #e0714f;
+  --md-primary-fg-color--light: #e8845f;
+  --md-primary-fg-color--dark: #c95e3e;
+  --md-accent-fg-color: #c95e3e;
+}
+
+[data-md-color-scheme="default"] {
+  --md-default-bg-color: #fbf7f1;
+  --md-code-bg-color: #f3ede4;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #1c1917;
+  --md-code-bg-color: #23201d;
+  --md-accent-fg-color: #f29373;
+}
+
+.zalie-hero {
+  text-align: center;
+}
+
+.zalie-hero img.zalie-logo {
+  width: 160px;
+}
+
+.md-typeset img.zalie-shot {
+  border-radius: 10px;
+  box-shadow: 0 6px 28px rgba(58, 42, 36, 0.18);
+}
+
+.md-typeset .zalie-swatch {
+  display: inline-block;
+  width: 1.4em;
+  height: 1em;
+  vertical-align: middle;
+  border-radius: 3px;
+  border: 1px solid rgba(58, 42, 36, 0.25);
+}

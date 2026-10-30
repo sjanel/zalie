@@ -1,0 +1,3 @@
+# Material for MkDocs installs MkDocs and its compatible Markdown dependencies. CI builds the documentation with these
+# exact versions.
+mkdocs-material==9.8.0

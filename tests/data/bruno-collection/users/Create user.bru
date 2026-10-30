@@ -1,0 +1,48 @@
+meta {
+  name: Create user
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/users?notify=true
+  body: json
+  auth: inherit
+}
+
+params:query {
+  notify: true
+  ~dryRun: 1
+}
+
+headers {
+  Content-Type: application/json
+  ~X-Trace: abc
+}
+
+body:json {
+  {
+    "name": "Zalie",
+    "tags": {
+      "breed": "Coton de Tulear"
+    }
+  }
+}
+
+body:text {
+  unused text body
+}
+
+script:pre-request {
+  bru.setVar("x", 1);
+}
+
+tests {
+  test("status", function() {
+    expect(res.status).to.equal(201);
+  });
+}
+
+docs {
+  Creates a **user**.
+}

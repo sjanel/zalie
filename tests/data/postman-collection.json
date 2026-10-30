@@ -1,0 +1,90 @@
+{
+  "info": {
+    "_postman_id": "1b2c3d4e",
+    "name": "Pet store",
+    "description": "The pet store API.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Pets",
+      "item": [
+        {
+          "name": "List pets",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Off", "value": "1", "disabled": true }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/pets?limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["pets"],
+              "query": [
+                { "key": "limit", "value": "10" },
+                { "key": "offset", "value": "5", "disabled": true }
+              ]
+            },
+            "description": { "content": "Lists the pets.", "type": "text/markdown" }
+          }
+        },
+        {
+          "name": "Create pet",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('ok')"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Zalie\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/pets",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "admin", "type": "string" },
+                { "key": "password", "value": "pw", "type": "string" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Login",
+      "request": {
+        "method": "POST",
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            { "key": "user", "value": "zalie" },
+            { "key": "age", "value": 7 }
+          ]
+        },
+        "url": { "raw": "{{baseUrl}}/login" },
+        "auth": {
+          "type": "apikey",
+          "apikey": [
+            { "key": "key", "value": "api_key" },
+            { "key": "value", "value": "{{key}}" },
+            { "key": "in", "value": "query" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Shortcut",
+      "request": "https://example.com/ping"
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://petstore.example.com" },
+    { "key": "token", "value": "t0k3n" }
+  ]
+}

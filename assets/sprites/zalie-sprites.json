@@ -1,0 +1,14 @@
+{
+  "frameWidth": 320,
+  "frameHeight": 240,
+  "animations": {
+    "run": {
+      "row": 0,
+      "frames": 8
+    },
+    "sleep": {
+      "row": 1,
+      "frames": 4
+    }
+  }
+}

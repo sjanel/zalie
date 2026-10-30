@@ -1,0 +1,42 @@
+# Builds (build/, build-release/, build/<preset>...)
+build*/
+out/
+.cache/
+compile_commands.json
+CMakeUserPresets.json
+*.profraw
+
+# Documentation
+site/
+.venv/
+venv/
+**/__pycache__/
+*.pyc
+
+# Private material, never to be published: photos of Zalie, sample collections with API keys
+resources/
+
+# Settings
+# - editors / IDEs, and the local configuration of agents (MCP servers may hold tokens)
+.idea/
+.vscode/
+.vs/
+*.code-workspace
+.kiro/settings/
+.claude/settings.local.json
+# - a Zalie data directory created at the root by '--home .' (or ZALIE_HOME pointing at the repository)
+/settings.json
+/workspace.json
+/history.json
+/imgui.ini
+/collections/
+.zalie/
+# - secrets
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+*~
+*.swp

@@ -1,0 +1,32 @@
+name: clang-format
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    name: clang-format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the formatting of the C++ sources
+        uses: jidicula/clang-format-action@v4.18.0
+        with:
+          clang-format-version: '22'
+          check-path: 'src'
+      - name: Check the formatting of the tests
+        uses: jidicula/clang-format-action@v4.18.0
+        with:
+          clang-format-version: '22'
+          check-path: 'tests'

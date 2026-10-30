@@ -1,0 +1,60 @@
+name: macOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS ${{ matrix.build }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [Debug, Release]
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set compilers
+        # C++ with Homebrew GCC (as aeronet), C and Objective-C (GLFW's Cocoa backend) with Apple Clang. Full path: CMake
+        # rejects a bare 'clang' as CMAKE_OBJC_COMPILER when GLFW enables OBJC from its subdirectory.
+        run: |
+          echo "CXX=g++-15" >> "$GITHUB_ENV"
+          echo "APPLE_CLANG=$(xcrun --find clang)" >> "$GITHUB_ENV"
+          echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          ${CXX} --version
+          clang --version
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -D CMAKE_BUILD_TYPE=${{ matrix.build }} \
+            -D CMAKE_CXX_COMPILER=${CXX} \
+            -D CMAKE_C_COMPILER=${APPLE_CLANG} \
+            -D CMAKE_OBJC_COMPILER=${APPLE_CLANG} \
+            -D CMAKE_OSX_SYSROOT=${SDKROOT} \
+            -D OPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
+            -D ZALIE_BUILD_TESTS=ON \
+            -D ZALIE_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 180 -j 4

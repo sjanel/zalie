@@ -1,0 +1,6 @@
+{
+  "version": "1",
+  "name": "Coton Kennel \"API\"",
+  "type": "collection",
+  "ignore": ["node_modules", ".git"]
+}

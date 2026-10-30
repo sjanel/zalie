@@ -1,0 +1,16 @@
+meta {
+  name: List users
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/users?limit=10
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: admin
+  password: {{password}}
+}

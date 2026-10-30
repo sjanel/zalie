@@ -1,0 +1,54 @@
+---
+Checks: "-*,\
+  bugprone-*,\
+  -bugprone-easily-swappable-parameters,\
+  clang-analyzer-*,\
+  misc-*,\
+  -misc-non-private-member-variables-in-classes,\
+  -misc-const-correctness,\
+  modernize-*,\
+  -modernize-avoid-c-arrays,\
+  -modernize-use-designated-initializers,\
+  -modernize-use-trailing-return-type,\
+  performance-*,\
+  portability-*,\
+  -portability-avoid-pragma-once,\
+  readability-*,\
+  -readability-function-cognitive-complexity,\
+  -readability-magic-numbers,\
+  -readability-qualified-auto,\
+  -bugprone-signed-bitwise,\
+  -misc-no-recursion,\
+  -modernize-use-std-print,\
+  -readability-trailing-comma,\
+  "
+# Disabled on top of aeronet's set:
+# - bugprone-signed-bitwise: Dear ImGui flags are plain 'int' enums, combined with '|' by design of its API.
+# - misc-no-recursion: collections are trees of folders; recursion depth is the folder nesting.
+# - modernize-use-std-print: <print> is missing from the libstdc++ of GCC 13, a supported compiler.
+# - readability-trailing-comma: fights with clang-format, which then puts one element per line.
+# Zalie's own headers only (not the fetched dependencies under build*/_deps).
+HeaderFilterRegex: '.*/(src|tests)/.*\.hpp$'
+CheckOptions:
+  # Glaze ships no IWYU pragmas: its symbols live in internal headers only meant to be reached through glaze/glaze.hpp.
+  # Same for OpenSSL and the implementation headers of the standard library and glibc.
+  - key: misc-include-cleaner.IgnoreHeaders
+    value: "glaze/.*;openssl/.*;bits/.*"
+  - key: modernize-use-equals-default.IgnoreMacros
+    value: "0"
+  - key: modernize-use-auto.MinTypeNameLength
+    value: "20"
+  - key: performance-move-const-arg.CheckTriviallyCopyableMove
+    value: "false"
+  - key: readability-identifier-length.MinimumParameterNameLength
+    value: "2"
+  - key: readability-identifier-length.MinimumVariableNameLength
+    value: "2"
+  # Screen coordinates.
+  - key: readability-identifier-length.IgnoredParameterNames
+    value: "^[xy]$"
+  - key: readability-identifier-length.IgnoredVariableNames
+    value: "^[xy]$"
+  # printf-like Dear ImGui functions: views are passed as "%.*s" with their size.
+  - key: bugprone-suspicious-stringview-data-usage.AllowedCallees
+    value: "ImGui::TreeNodeEx;ImGui::SetTooltip;ImGui::Text;ImGui::TextColored;ImGui::TextDisabled;ImGui::TextWrapped"

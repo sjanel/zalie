@@ -1,0 +1,102 @@
+# yaml-language-server: $schema=https://squidfunk.github.io/mkdocs-material/schema.json
+
+site_name: Zalie
+site_description: A light, fast and friendly HTTP client, written in C++23.
+site_url: https://sjanel.github.io/zalie/
+repo_url: https://github.com/sjanel/zalie
+repo_name: sjanel/zalie
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: en
+  logo: assets/logo.png
+  favicon: assets/favicon.png
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - content.code.copy
+    - navigation.footer
+    - navigation.indexes
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - search.highlight
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to the Nuit theme
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to the Coton theme
+
+extra_css:
+  - stylesheets/zalie.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
+
+validation:
+  links:
+    anchors: warn
+    unrecognized_links: warn
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Install: getting-started/install.md
+      - Your first request: getting-started/first-request.md
+  - User guide:
+      - The interface: guide/interface.md
+      - Requests: guide/requests.md
+      - Responses: guide/responses.md
+      - Collections: guide/collections.md
+      - Variables and environments: guide/variables.md
+      - Inspector and code snippets: guide/inspector.md
+      - Import from Bruno, Postman, curl: guide/import.md
+      - Keyboard shortcuts: guide/shortcuts.md
+  - Reference:
+      - Command line: reference/command-line.md
+      - Files and formats: reference/file-format.md
+      - Build options: reference/build-options.md
+  - Project:
+      - Architecture and performance: development/architecture.md
+      - Testing: development/testing.md
+      - Artwork: development/artwork.md
+      - Contributing: development/contributing.md
+      - Changelog: CHANGELOG.md
+      - Roadmap: ROADMAP.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/sjanel/zalie
+
+copyright: Copyright &copy; 2026 Zalie contributors

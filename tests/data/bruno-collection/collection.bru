@@ -1,0 +1,21 @@
+headers {
+  X-Client: zalie
+  ~X-Debug: 1
+}
+
+auth {
+  mode: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+vars:pre-request {
+  apiVersion: v2
+}
+
+docs {
+  # Coton Kennel
+  Collection docs.
+}

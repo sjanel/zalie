@@ -1,0 +1,86 @@
+name: Linux
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Headers of the X11 extensions GLFW loads at run time (no OpenGL headers needed: Dear ImGui bundles its loader).
+  LINUX_PACKAGES: >-
+    ninja-build libssl-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.compiler }} ${{ matrix.build }}${{ matrix.asan == 'ON' && ' asan' || '' }}${{ matrix.app == 'OFF' && ' core' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { compiler: gcc-13, build: Debug, asan: ON, app: ON }
+          - { compiler: gcc-13, build: Debug, asan: OFF, app: OFF }
+          - { compiler: clang-22, build: Debug, asan: ON, app: ON }
+          - { compiler: clang-22, build: Release, asan: OFF, app: ON, artifact: true }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${LINUX_PACKAGES}
+
+      - name: Install GCC
+        if: ${{ startsWith(matrix.compiler, 'gcc') }}
+        run: |
+          version="${{ matrix.compiler }}"
+          version="${version##*-}"
+          sudo apt-get install -y "gcc-${version}" "g++-${version}"
+          echo "CC=gcc-${version}" >> "$GITHUB_ENV"
+          echo "CXX=g++-${version}" >> "$GITHUB_ENV"
+
+      - name: Install Clang
+        if: ${{ startsWith(matrix.compiler, 'clang') }}
+        run: |
+          version="${{ matrix.compiler }}"
+          version="${version##*-}"
+          wget -q https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh "${version}"
+          echo "CC=clang-${version}" >> "$GITHUB_ENV"
+          echo "CXX=clang++-${version}" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -D CMAKE_BUILD_TYPE=${{ matrix.build }} \
+            -D CMAKE_C_COMPILER=${CC} \
+            -D CMAKE_CXX_COMPILER=${CXX} \
+            -D ZALIE_BUILD_TESTS=ON \
+            -D ZALIE_BUILD_APP=${{ matrix.app }} \
+            -D ZALIE_ENABLE_ASAN=${{ matrix.asan }} \
+            -D ZALIE_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 180 -j 4
+
+      - name: Upload the executable
+        if: ${{ matrix.artifact }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: zalie-linux-x86_64
+          path: build/bin/zalie
+          retention-days: 7
