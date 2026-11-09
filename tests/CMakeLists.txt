@@ -19,6 +19,7 @@ foreach(
   bruno-import
   json-format
   json-path
+  latency-histogram
   persistence
   postman-import
   resolved-request
@@ -33,6 +34,7 @@ endforeach()
 
 # Integration tests: real HTTP exchanges against a local aeronet server.
 zalie_add_test(core executor zalie::core aeronet::aeronet_server)
+zalie_add_test(core load-runner zalie::core aeronet::aeronet_server)
 
 # UI tests: the real user interface, driven headless through Dear ImGui's null backend (no window, no GPU).
 if(ZALIE_BUILD_APP)

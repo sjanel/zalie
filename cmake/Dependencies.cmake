@@ -18,10 +18,10 @@ set(FETCHCONTENT_QUIET ON)
 # aeronet - HTTP/1.1 + HTTP/2 client (and the server, for the integration tests only)
 # ---------------------------------------------------------------------------
 set(ZALIE_AERONET_URL
-    "https://github.com/sjanel/aeronet/archive/9ce19dec4e8e310a2e478fd0d41e26ccb33013d9.tar.gz"
+    "https://github.com/sjanel/aeronet/archive/9e139bab740946df9324da27a87d53fb48d39c83.tar.gz"
     CACHE STRING "aeronet source archive")
 set(ZALIE_AERONET_SHA256
-    "0f745ea9f100c9c5c50764ce7bcb276b88816dafad06f9ad2ef45423b67298f6"
+    "84d9b0888fa3f66ee5dd80e07e5add2e2f5b462b32d140a90c58999e4d228869"
     CACHE STRING "aeronet source archive SHA-256")
 
 set(AERONET_ENABLE_HTTP_CLIENT ON)

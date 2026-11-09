@@ -5,6 +5,7 @@ out/
 compile_commands.json
 CMakeUserPresets.json
 *.profraw
+.clangd
 
 # Documentation
 site/

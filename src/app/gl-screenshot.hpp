@@ -9,8 +9,12 @@ namespace zalie::app {
 class OffscreenTarget {
  public:
   OffscreenTarget() = default;
+
+  OffscreenTarget(OffscreenTarget&&) noexcept = delete;
   OffscreenTarget(const OffscreenTarget&) = delete;
   OffscreenTarget& operator=(const OffscreenTarget&) = delete;
+  OffscreenTarget& operator=(OffscreenTarget&&) noexcept = delete;
+
   ~OffscreenTarget();
 
   // Creates the target. Returns false if framebuffer objects are not available.
