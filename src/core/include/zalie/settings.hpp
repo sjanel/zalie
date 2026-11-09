@@ -46,6 +46,8 @@ struct Settings {
   float requestEditorWidthRatio{0.5F};
   std::uint32_t maxBodyMiB{512};
   std::uint32_t workers{4};
+  // Most connections of a performance run (each one is a thread). 0: the number of vCPUs.
+  std::uint32_t maxLoadConnections{0};
   bool inspectorVisible{true};
   bool sidebarVisible{true};
   bool autosave{true};

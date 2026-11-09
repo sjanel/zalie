@@ -14,11 +14,13 @@
 #include "zalie/collection.hpp"
 #include "zalie/exchange.hpp"
 #include "zalie/executor.hpp"
+#include "zalie/load-runner.hpp"
 #include "zalie/raw-chars.hpp"
 #include "zalie/request.hpp"
 #include "zalie/snippets.hpp"
 #include "zalie/text-document.hpp"
 #include "zalie/ui/assets.hpp"
+#include "zalie/ui/perf-tab.hpp"
 #include "zalie/ui/text-view.hpp"
 #include "zalie/ui/theme.hpp"
 #include "zalie/workspace.hpp"
@@ -29,7 +31,7 @@ namespace zalie::ui {
 enum class RequestSection : std::uint8_t { params, headers, body, auth, settings, docs };
 enum class ResponseSection : std::uint8_t { body, headers, sent };
 
-// An open request tab.
+// An open tab: a request, or the Performance tab of a request when 'perf' is set.
 struct RequestTab {
   [[nodiscard]] bool pending() const noexcept { return ticket.valid(); }
 
@@ -37,6 +39,8 @@ struct RequestTab {
   Request scratch;
   // Last exchange of the tab.
   std::unique_ptr<Exchange> exchange;
+  // The run settings, the run and the dashboard of a Performance tab, null for a request tab.
+  std::unique_ptr<PerfTab> perf;
   // The request as sent, as raw HTTP (built on demand for the "Sent" view).
   RawChars32 sentText;
   LineIndex sentLines;
@@ -118,13 +122,15 @@ class App {
   void openRequest(std::uint64_t requestId);
   // Opens a new tab with an unsaved request.
   RequestTab& newScratchTab();
+  // Opens the Performance tab of the request of tab 'sourceIndex', or focuses it if it is open.
+  RequestTab& openPerformanceTab(std::size_t sourceIndex);
   // Click on a history entry: opens its request, or a new unsaved request with its method and URL.
   void openHistoryEntry(std::size_t index);
   // Double click on a history entry: puts its method and URL (as sent) in the request of the active tab.
   void copyHistoryEntry(std::size_t index);
   // Shows the history (or the collections) in the sidebar.
   void showHistory(bool show) noexcept;
-  // Sends / cancels the request of the active tab.
+  // Sends / cancels the request of the active tab, or runs / stops a Performance tab.
   void sendActiveTab();
   void cancelActiveTab();
   void closeTab(std::size_t index);
@@ -134,6 +140,12 @@ class App {
   void pollExchanges();
   // Shows an exchange in a tab as if it had just completed (used by pollExchanges, the demo mode and the tests).
   void showExchange(RequestTab& tab, Exchange exchange);
+  // Shows a run in a Performance tab as if it had just ended (demo mode and tests).
+  void showLoadSnapshot(RequestTab& tab, std::shared_ptr<const LoadSnapshot> snapshot);
+  // Writes the report of the last run of a Performance tab. Returns false (with an error toast) on failure.
+  bool exportRun(RequestTab& tab, const std::filesystem::path& path);
+  // Picks up the snapshots of the runs, ends the finished ones (called by frame()).
+  void pollRuns();
 
   [[nodiscard]] std::size_t tabCount() const noexcept { return _tabs.size(); }
   [[nodiscard]] RequestTab& tab(std::size_t index) noexcept { return *_tabs[static_cast<std::uint32_t>(index)]; }
@@ -146,6 +158,7 @@ class App {
   [[nodiscard]] std::span<const Toast> toasts() const noexcept { return {_toasts.data(), _toasts.size()}; }
   void toast(std::string_view message, bool error = false);
   [[nodiscard]] Workspace& workspace() noexcept { return _workspace; }
+  [[nodiscard]] PlanCompiler& planCompiler() noexcept { return _planCompiler; }
   // Location of the active request ("Collection / Folder / "), as shown above the URL bar.
   [[nodiscard]] std::string_view breadcrumb() const noexcept { return _breadcrumb; }
   // Opens a dialog at the next frame ('collectionIndex': collection of the collection settings dialog).
@@ -187,6 +200,23 @@ class App {
   static void UpdateJsonFilter(RequestTab& tab, bool submitted);
   static void DrawSentRequest(RequestTab& tab);
 
+  // Performance tab (perf-panel.cpp).
+  void drawPerformancePanel(RequestTab& tab, Request& request);
+  void updatePerformanceTab(RequestTab& tab, Request& request);
+  void submitPlan(RequestTab& tab, const Request& request);
+  void startRun(RequestTab& tab, const Request& request);
+  void drawPerfHeader(RequestTab& tab, const Request& request);
+  void listPerfRows(RequestTab& tab, const Request& request);
+  void drawPerfSettings(RequestTab& tab, Request& request);
+  void drawPerfPlan(RequestTab& tab, const Request& request);
+  void drawPerfParameters(RequestTab& tab, Request& request);
+  void drawPerfRowEditor(RequestTab& tab, Request& request);
+  void drawPerfDialogs(RequestTab& tab, const Request& request);
+  void drawPerfDashboard(PerfTab& perf);
+  void drawPerfTables(PerfTab& perf);
+  void stopRunner(std::unique_ptr<LoadRunner> runner);
+  [[nodiscard]] std::filesystem::path dataBaseDirectory(const RequestTab& tab);
+
   // Inspector (inspector.cpp).
   void drawInspector(ImVec2 size);
   void drawSnippetCard(RequestTab& tab, Request& request);
@@ -209,7 +239,9 @@ class App {
   void touch(OpenCollection* pCollection) noexcept;
   void createRequest(OpenCollection& collection, Folder& folder, std::string_view name);
   void deleteRequest(OpenCollection& collection, std::uint64_t requestId);
+  // The request tab (not a Performance tab) of a request.
   [[nodiscard]] RequestTab* findTab(std::uint64_t requestId) noexcept;
+  [[nodiscard]] RequestTab* findTabByUid(std::uint64_t uid) noexcept;
   void releaseImage(RequestTab& tab);
   void setActiveTab(std::size_t index) noexcept;
 
@@ -219,11 +251,14 @@ class App {
 
   Workspace& _workspace;
   Executor& _executor;
+  PlanCompiler _planCompiler;
   TextureStore _textures;
   Assets _assets;
   amc::vector<std::unique_ptr<RequestTab>> _tabs;
   amc::vector<Toast> _toasts;
   amc::vector<Exchange> _completed;
+  // Runs of closed Performance tabs, stopped: released once over, never waited for on the UI thread.
+  amc::vector<std::unique_ptr<LoadRunner>> _stoppingRunners;
   RawChars32 _filter;
   RawChars32 _dialogText;
   RawChars32 _dialogText2;

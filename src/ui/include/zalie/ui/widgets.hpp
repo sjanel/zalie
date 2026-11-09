@@ -2,11 +2,15 @@
 
 #include <imgui.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <span>
 #include <string_view>
+#include <utility>
 
 #include "zalie/exchange.hpp"
 #include "zalie/key-value.hpp"
@@ -35,6 +39,23 @@ class ScopedFont {
   ScopedFont& operator=(const ScopedFont&) = delete;
   ~ScopedFont() { ImGui::PopFont(); }
 };
+
+// Formats into 'buffer' (truncated to its size) and returns the text written.
+template <class... Args>
+std::string_view FormatTo(std::span<char> buffer, std::format_string<Args...> fmt, Args&&... args) {
+  const auto result =
+      std::format_to_n(buffer.data(), static_cast<std::ptrdiff_t>(buffer.size()), fmt, std::forward<Args>(args)...);
+  return {buffer.data(),
+          static_cast<std::size_t>(std::min<std::ptrdiff_t>(result.size, static_cast<std::ptrdiff_t>(buffer.size())))};
+}
+
+// Formats into 'buffer' and returns a null-terminated C string (labels for Dear ImGui), truncated if needed.
+template <std::size_t N, class... Args>
+const char* Label(std::array<char, N>& buffer, std::format_string<Args...> fmt, Args&&... args) {
+  const auto result = std::format_to_n(buffer.data(), N - 1, fmt, std::forward<Args>(args)...);
+  *result.out = '\0';
+  return buffer.data();
+}
 
 // InputText editing a RawChars in place (grown on demand by the resize callback: no intermediate std::string).
 bool InputText(const char* label, RawChars32& str, ImGuiInputTextFlags flags = 0, const char* hint = nullptr);

@@ -79,10 +79,10 @@ void App::createRequest(OpenCollection& collection, Folder& folder, std::string_
 }
 
 void App::deleteRequest(OpenCollection& collection, std::uint64_t requestId) {
-  for (std::uint32_t i = 0; i < _tabs.size(); ++i) {
+  // Its tab, and its Performance tab.
+  for (std::uint32_t i = _tabs.size(); i-- > 0;) {
     if (_tabs[i]->requestId == requestId) {
       closeTab(i);
-      break;
     }
   }
   RemoveRequest(collection.collection.root, requestId);
@@ -315,10 +315,9 @@ void App::drawFolder(OpenCollection& collection, Folder& folder, int depth) {
     if (deleted) {
       // Close the tabs of the requests of the folder, then remove it.
       ForEachRequest(child, [this](const Request& request) {
-        for (std::uint32_t tabIdx = 0; tabIdx < _tabs.size(); ++tabIdx) {
+        for (std::uint32_t tabIdx = _tabs.size(); tabIdx-- > 0;) {
           if (_tabs[tabIdx]->requestId == request.id) {
             closeTab(tabIdx);
-            break;
           }
         }
       });
@@ -394,6 +393,10 @@ void App::drawRequestItem(OpenCollection& collection, Folder& folder, Request& r
   if (ImGui::BeginPopupContextItem("##requestMenu")) {
     if (ImGui::MenuItem("Open")) {
       openRequest(request.id);
+    }
+    if (ImGui::MenuItem("Performance test")) {
+      openRequest(request.id);
+      openPerformanceTab(_activeTab);
     }
     if (ImGui::MenuItem("Rename...")) {
       _renameTarget = RenameTarget::request;

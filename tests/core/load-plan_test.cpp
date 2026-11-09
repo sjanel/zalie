@@ -381,6 +381,25 @@ TEST_F(LoadPlanTest, AnEmptyUrlIsAnIssue) {
   EXPECT_FALSE(compile().valid());
 }
 
+TEST_F(LoadPlanTest, HostOfTheRequests) {
+  _request.url.assign(std::string_view{"https://user@{{host}}:8443/search?q={{term}}"});
+  addVariable("host", "api.example.com");
+  _settings.parameters.push_back(ListParameter("term", "dog\ncat"));
+  EXPECT_EQ(compile().host(), "api.example.com");
+  EXPECT_EQ(LoadPlan(ResolveRequest(_request, _collection, MakeScope(_collection, -1))).host(), "api.example.com");
+
+  // A generated value in the authority, or a whole generated URL: the host is not known in advance.
+  _settings.parameters.push_back(ListParameter("host", "a.example.com\nb.example.com"));
+  EXPECT_EQ(compile().host(), "");
+  _request.url.assign(std::string_view{"{{target}}"});
+  _settings.parameters.clear();
+  _settings.parameters.push_back(ListParameter("target", "http://localhost/a"));
+  const LoadPlan plan = compile();
+  ASSERT_TRUE(plan.valid());
+  EXPECT_EQ(plan.host(), "");
+  EXPECT_EQ(plan.parameterVariable(0), 0U);
+}
+
 TEST_F(LoadPlanTest, ValueCountAndPass) {
   _request.url.assign(std::string_view{"http://example.com/{{a}}/{{b}}/{{c}}"});
   _settings.parameters.push_back(ListParameter("a", "1\n2\n3"));

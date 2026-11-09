@@ -4,7 +4,7 @@ Zalie is three layers, each one a CMake target:
 
 | Target | Directory | Content | Dependencies |
 | ------ | --------- | ------- | ------------ |
-| `zalie_core` | `src/core` | model, variables, resolution, snippets, importers, persistence, executor | aeronet client, amc, glaze (private) |
+| `zalie_core` | `src/core` | model, variables, resolution, snippets, importers, persistence, executor, load runner | aeronet client, amc, glaze (private) |
 | `zalie_ui` | `src/ui` | the whole interface, independent of the platform and the renderer | `zalie_core`, Dear ImGui (no backend) |
 | `zalie` | `src/app` | GLFW window, OpenGL 3 renderer, event loop, command line | `zalie_ui`, GLFW, Dear ImGui backends |
 
@@ -38,6 +38,43 @@ TextView draws the visible lines only
   the response arrives, never in a frame.
 - **Completion wakes the UI** through a C function pointer (`glfwPostEmptyEvent`), no polling.
 
+## Life of a performance run
+
+```text
+UI thread                       compiler thread              load threads (one per connection) + collector
+---------                       ---------------              ---------------------------------------------
+request or run settings edited
+  -> PlanCompiler::submit()  -> MakeLoadPreview():
+     (copies of the request,      LoadPlan: the request compiled
+      variables, headers, auth)   into templates and value
+                                  generators, data files indexed
+                                  (cached), samples, first
+                                  requests
+   <- shared_ptr<LoadPreview> + wake
+parameter table, preview
+Run -> LoadRunner(plan) ------------------------------------> fill request N into reused buffers,
+                                                              send, count the body (no copy), record
+                                                              into per-thread histograms
+                                                              collector: merge every 100 ms
+   <- shared_ptr<LoadSnapshot> + wake ------------------------- publish the snapshot
+charts prepared once per snapshot, drawn at most one point per pixel
+```
+
+- **Nothing proportional to the data files on the UI thread**: the plan of a Performance tab is compiled again on a
+  thread of its own (`PlanCompiler`) whenever the request or its settings change. It gets a copy of the request and of
+  the parts of the collection it uses, not the whole collection. A newer job of a tab replaces its queued one; the
+  indexes of the data files are kept while their size and date do not change.
+- **The run sends what the preview shows**: the run starts from the compiled plan (shared, immutable), with the seed
+  of the preview when the settings ask for a new seed per run.
+- **A run does not animate the interface**: the collector wakes the event loop after each snapshot (about 10 times per
+  second), the UI picks up the latest one at a constant cost, whatever the number of connections. `App::animating()`
+  stays false: no rendering at the vsync rate while the threads load the server.
+- **Charts at a constant cost**: the series are converted once per snapshot (rates, latencies, a histogram re-binned
+  evenly on its logarithmic axis, the percentile curve); the chart widget reduces them to one point per pixel when the
+  data, the width or the zoom change, so a frame costs the same for a run of 10 seconds or of an hour.
+- **Closing a tab never waits for its run**: the run is stopped and released later, once its requests in flight end
+  (at their next bytes, or their timeout).
+
 ## Memory and copies
 
 - **`RawChars` instead of `std::string`** (aeronet): no SSO, no null terminator, trivially relocatable. Model fields are
@@ -62,7 +99,11 @@ TextView draws the visible lines only
   states of multi-line syntax (XML comments, strings...) are precomputed per line, so any line can be drawn without
   the previous ones. Lines longer than 2 KB are split (on a UTF-8 boundary).
 - **Event driven loop**: when nothing animates, the loop blocks in `glfwWaitEventsTimeout` (0% CPU); it renders
-  continuously only while a request is in flight (the running dog) or a toast fades, at the vsync rate.
+  continuously only while a request is in flight (the running dog) or a toast fades, at the vsync rate. A performance
+  run wakes it at each snapshot instead.
+- **Charts are drawn with `ImDrawList`** (`src/ui/src/chart.cpp`): axes with round ticks, lines, stacked areas, bars,
+  legend, hover and zoom, in the colors of the theme. No plotting library: a smaller executable, and the same headless
+  tests as the rest of the interface.
 - **No GL in the UI code**: images (logo, sprites, image responses) go through Dear ImGui's texture protocol
   (`ImGuiBackendFlags_RendererHasTextures`), the renderer backend uploads them. The UI thus runs with any backend,
   including the null one of the tests.

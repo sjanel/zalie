@@ -16,6 +16,8 @@ mkdir -p "${out}/screenshots"
 "${zalie}" --home "${home}/coton" --demo response --theme coton --screenshot "${out}/screenshots/coton.png"
 "${zalie}" --home "${home}/nuit" --demo response --theme nuit --screenshot "${out}/screenshots/nuit.png"
 "${zalie}" --home "${home}/fetching" --demo pending --theme coton --frames 40 --screenshot "${out}/screenshots/fetching.png"
+"${zalie}" --home "${home}/performance" --demo performance --theme coton --size 1440x1200 --frames 40 \
+  --screenshot "${out}/screenshots/performance.png"
 
 cp "${root}/assets/logo/zalie-logo-256.png" "${out}/logo.png"
 cp "${root}/assets/logo/zalie-logo-64.png" "${out}/favicon.png"

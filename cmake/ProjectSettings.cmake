@@ -27,6 +27,14 @@ if(ZALIE_ENABLE_LTO AND (ZALIE_MULTI_CONFIG OR CMAKE_BUILD_TYPE STREQUAL "Releas
         # GCC 13 false positive, emitted at link time once LTO has inlined aeronet's HttpClient constructor
         # ('string_view::find' bound "exceeds maximum object size").
         add_link_options($<$<CONFIG:Release>:-Wno-stringop-overread>)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+          # zstd compiles its sources with '-Wa,--noexecstack'. GCC's LTO plugin wants the same assembler options in
+          # every LTO object, or it warns at each link ("Extra option to '-Xassembler'") and drops them: give the option
+          # to all the targets (zstd excepted, see Dependencies.cmake). Redundant, GCC already marks the stack of its
+          # code as non-executable, but cheaper than linking zstd without LTO (+66 KB).
+          set(ZALIE_LTO_ASSEMBLER_OPTION "$<$<CONFIG:Release>:-Wa,--noexecstack>")
+          add_compile_options("${ZALIE_LTO_ASSEMBLER_OPTION}")
+        endif()
       endif()
     else()
       set(ZALIE_LTO_STATUS "off (not supported by the toolchain)")

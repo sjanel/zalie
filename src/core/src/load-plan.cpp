@@ -237,6 +237,7 @@ bool TextTemplate::appendTo(std::span<const std::string_view> values, RawChars32
 LoadPlan::LoadPlan(ResolvedRequest request) : _resolved(std::move(request)), _generators(CombineMode::independent, 1) {
   _url.addPart({.literal = _resolved.url});
   _body.addPart({.literal = View(_resolved.body)});
+  _host = UrlHost(_resolved.url);
   compileHeaders({}, {});
 }
 
@@ -331,6 +332,9 @@ LoadPlan::LoadPlan(const Request& request, const Collection& collection, const V
     _urlNeedsScheme = true;
   }
   const std::size_t authorityEnd = AuthorityEnd(resolvedUrl);
+  if (!_urlNeedsScheme && !resolvedUrl.substr(0, authorityEnd).contains(View(prefix))) {
+    _host = UrlHost(resolvedUrl);
+  }
   _url = splitter.split(resolvedUrl, [authorityEnd](std::string_view /*literal*/, std::size_t position) {
     return position < authorityEnd ? SlotEncoding::checked : SlotEncoding::url;
   });

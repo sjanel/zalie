@@ -4,9 +4,9 @@ Zalie has 150 GoogleTest tests in three families, all discovered by `ctest` (one
 
 | Family | Files | What they check |
 | ------ | ----- | --------------- |
-| Unit tests | `tests/core/*_test.cpp` | model, URL parsing, variables, request resolution, snippets, syntax highlighting, JSON formatting, JSONPath, text documents, string pools, persistence round trips, Bruno / Postman / curl import |
-| Integration tests | `tests/core/executor_test.cpp` | real HTTP exchanges against a local [aeronet](https://github.com/sjanel/aeronet) server: methods, headers, user agent, redirects, `HEAD`, big bodies and progress, body limit, timeout, cancellation (in flight and queued), connection errors, 40 concurrent requests on 4 workers, destruction with pending requests |
-| UI tests | `tests/ui/*_test.cpp` | the real interface, driven headless (see below): every section and response view, tabs and shortcuts, sending to a local server, cancelling with ++esc++, errors, pasting a curl command, JSONPath filter, response below / beside the request, imports, dialogs, filters, history, theme and HiDPI, large bodies |
+| Unit tests | `tests/core/*_test.cpp` | model, URL parsing, variables, request resolution, snippets, syntax highlighting, JSON formatting, JSONPath, text documents, string pools, persistence round trips, Bruno / Postman / curl import, the plans of performance runs (value generators, data files, parameter rows and previews) and their JSON reports |
+| Integration tests | `tests/core/executor_test.cpp` | real HTTP exchanges against a local [aeronet](https://github.com/sjanel/aeronet) server: methods, headers, user agent, redirects, `HEAD`, big bodies and progress, body limit, timeout, cancellation (in flight and queued), connection errors, 40 concurrent requests on 4 workers, destruction with pending requests. `tests/core/load-runner_test.cpp`: performance runs (limits, warm-up, rate cap, statuses, errors, time series, varied values) |
+| UI tests | `tests/ui/*_test.cpp` | the real interface, driven headless (see below): every section and response view, tabs and shortcuts, sending to a local server, cancelling with ++esc++, errors, pasting a curl command, JSONPath filter, response below / beside the request, imports, dialogs, filters, history, theme and HiDPI, large bodies, the Performance tab (parameter rows, plans compiled off the UI thread, runs against a local server, stop, confirmation, dropped data files, export, a dashboard of an hour), the chart widget (scales, reduction to one point per pixel, legend, hover, zoom) |
 
 ## Running
 
@@ -73,6 +73,30 @@ size type (`std::uint32_t`) or cast a `std::size_t` index.
       -D FETCHCONTENT_SOURCE_DIR_AERONET=$PWD/build/_deps/aeronet-src \
       -D FETCHCONTENT_SOURCE_DIR_IMGUI=$PWD/build/_deps/imgui-src
     ```
+
+## Coverage
+
+The `coverage` job of `linux.yml` builds the tests with the source-based coverage of Clang 23
+(`-fprofile-instr-generate -fcoverage-mapping`, and `NDEBUG`: the failure branch of an `assert` is not a gap), runs
+them, merges their profiles with `llvm-profdata` and measures the lines and branches of `src/` with `llvm-cov`. The
+total goes to the summary of the job, the details to [Codecov](https://codecov.io/gh/sjanel/zalie) (the badge of the
+README) and to an HTML report, the `coverage-report` artifact of the run. `src/app` (window, OpenGL, `main`) is not
+linked into the tests: it is not measured.
+
+The same, locally (in a RAM disk, see above):
+
+```bash
+B=$XDG_RUNTIME_DIR/zalie-coverage
+flags="-DNDEBUG -fprofile-instr-generate -fcoverage-mapping"
+cmake -S . -B $B -G Ninja -D CMAKE_BUILD_TYPE=Debug -D CMAKE_C_COMPILER=clang-23 -D CMAKE_CXX_COMPILER=clang++-23 \
+  -D CMAKE_C_FLAGS="$flags" -D CMAKE_CXX_FLAGS="$flags" -D CMAKE_EXE_LINKER_FLAGS=-fprofile-instr-generate
+cmake --build $B && LLVM_PROFILE_FILE=$B/profiles/%p.profraw ctest --test-dir $B -j 8
+llvm-profdata-23 merge -sparse $B/profiles/*.profraw -o $B/coverage.profdata
+tests=($B/tests/zalie_*_test) && objects=("${tests[@]:1}")
+llvm-cov-23 report --instr-profile=$B/coverage.profdata ${tests[0]} ${objects[@]/#/--object=} src
+```
+
+`llvm-cov-23 show --format=html --output-dir=<dir>` with the same arguments writes the annotated sources.
 
 ## Test data
 

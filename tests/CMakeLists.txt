@@ -22,6 +22,8 @@ foreach(
   json-path
   latency-histogram
   load-plan
+  load-preview
+  load-report
   persistence
   postman-import
   resolved-request

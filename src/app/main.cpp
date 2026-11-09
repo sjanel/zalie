@@ -13,10 +13,13 @@
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <memory>
+#include <random>
 #include <span>
 #include <string>
 #include <string_view>
@@ -30,12 +33,19 @@
 #include "zalie/exchange.hpp"
 #include "zalie/executor.hpp"
 #include "zalie/file-io.hpp"
+#include "zalie/latency-histogram.hpp"
+#include "zalie/load-runner.hpp"
+#include "zalie/load-settings.hpp"
 #include "zalie/paths.hpp"
 #include "zalie/raw-chars.hpp"
+#include "zalie/request.hpp"
 #include "zalie/resolved-request.hpp"
+#include "zalie/settings.hpp"
 #include "zalie/ui/app.hpp"
 #include "zalie/ui/embedded.hpp"
+#include "zalie/ui/perf-tab.hpp"
 #include "zalie/ui/theme.hpp"
+#include "zalie/url.hpp"
 #include "zalie/variables.hpp"
 #include "zalie/workspace.hpp"
 
@@ -63,7 +73,7 @@ constexpr std::string_view kUsage =
     "  --screenshot <file>   render a hidden window and save it as PNG, then exit (documentation)\n"
     "  --size <WxH>          window size (default 1440x900)\n"
     "  --frames <n>          frames rendered before the screenshot (default 10)\n"
-    "  --demo <response|pending>  demo state for the screenshot\n"
+    "  --demo <response|pending|performance>  demo state for the screenshot\n"
     "  --no-desktop-entry    Linux: do not write ~/.local/share/applications/zalie.desktop (written at launch\n"
     "                        when no desktop entry exists, for the icon of the task bar)\n"
     "  --version             print the version and exit\n"
@@ -184,6 +194,118 @@ void EnsureDesktopIntegration() {
 #endif
 }
 
+// Key numbers of a histogram.
+LatencySummary Summarize(const LatencyHistogram& histogram) {
+  return {.count = histogram.count(),
+          .minNs = histogram.minNs(),
+          .p50Ns = histogram.percentileNs(50.0),
+          .p90Ns = histogram.percentileNs(90.0),
+          .p95Ns = histogram.percentileNs(95.0),
+          .p99Ns = histogram.percentileNs(99.0),
+          .p999Ns = histogram.percentileNs(99.9),
+          .maxNs = histogram.maxNs(),
+          .meanNs = histogram.meanNs(),
+          .stddevNs = histogram.stddevNs()};
+}
+
+// A plausible run of 30 seconds, with a few 404 and timeouts (made-up numbers, reproducible).
+std::shared_ptr<const LoadSnapshot> MakeDemoSnapshot() {
+  static constexpr int kSeconds = 30;
+  static constexpr std::size_t k2xx = static_cast<std::size_t>(LoadClass::status2xx);
+  static constexpr std::size_t k4xx = static_cast<std::size_t>(LoadClass::status4xx);
+  static constexpr std::size_t kErrors = static_cast<std::size_t>(LoadClass::error);
+  auto snapshot = std::make_shared<LoadSnapshot>();
+  std::mt19937_64 random(42);  // NOLINT(cert-msc32-c,cert-msc51-cpp): the same demo each time
+  std::lognormal_distribution<double> latency(std::log(2.1e6), 0.42);
+  std::uniform_real_distribution<double> noise(-1.0, 1.0);
+  for (int second = 0; second < kSeconds; ++second) {
+    LatencyHistogram pointHistogram;
+    // A slower patch in the middle of the run.
+    const double slowdown = second >= 17 && second <= 20 ? 1.8 : 1.0;
+    const auto nbRequests = static_cast<std::uint64_t>((12400.0 + (450.0 * noise(random))) / slowdown);
+    for (std::uint64_t idx = 0; idx < nbRequests; ++idx) {
+      const auto ns = static_cast<std::uint64_t>(latency(random) * slowdown);
+      pointHistogram.record(ns);
+      snapshot->totalHistogram.record(ns);
+      snapshot->headHistogram.record(ns - (ns / 8));
+    }
+    LoadSecond point{.bodyBytes = nbRequests * 1536,
+                     .p50Ns = pointHistogram.percentileNs(50.0),
+                     .p90Ns = pointHistogram.percentileNs(90.0),
+                     .p99Ns = pointHistogram.percentileNs(99.0),
+                     .maxNs = pointHistogram.maxNs(),
+                     .inFlight = 32};
+    point.counts[k4xx] = nbRequests / 330;
+    point.counts[kErrors] = second >= 17 && second <= 20 ? 9 : 0;
+    point.counts[k2xx] = nbRequests - point.counts[k4xx];
+    for (std::size_t outcome = 0; outcome < kNbLoadClasses; ++outcome) {
+      snapshot->counts[outcome] += point.counts[outcome];
+    }
+    snapshot->bodyBytes += point.bodyBytes;
+    snapshot->series.push_back(point);
+  }
+  snapshot->total = Summarize(snapshot->totalHistogram);
+  snapshot->head = Summarize(snapshot->headHistogram);
+  snapshot->byClass[k2xx] = snapshot->total;
+  snapshot->byClass[k4xx] = snapshot->total;
+  snapshot->byClass[k4xx].count = snapshot->counts[k4xx];
+  static constexpr std::uint64_t kTimeoutNs = 30'000'000'000;
+  snapshot->byClass[kErrors] = {.count = snapshot->counts[kErrors],
+                                .minNs = kTimeoutNs,
+                                .p50Ns = kTimeoutNs,
+                                .p90Ns = kTimeoutNs,
+                                .p95Ns = kTimeoutNs,
+                                .p99Ns = kTimeoutNs,
+                                .p999Ns = kTimeoutNs,
+                                .maxNs = kTimeoutNs,
+                                .meanNs = kTimeoutNs};
+  snapshot->statuses.push_back({.count = snapshot->counts[k2xx], .status = 200});
+  snapshot->statuses.push_back({.count = snapshot->counts[k4xx], .status = 404});
+  snapshot->errors[static_cast<std::size_t>(LoadErrorKind::timeout)] = {.count = snapshot->counts[kErrors],
+                                                                        .firstMessage = "request timed out"};
+  snapshot->phase = LoadPhase::finished;
+  snapshot->connections = 32;
+  snapshot->elapsedSeconds = kSeconds;
+  snapshot->meanRequestsPerSecond = static_cast<double>(snapshot->requests()) / kSeconds;
+  snapshot->currentRequestsPerSecond = snapshot->meanRequestsPerSecond;
+  snapshot->peakRequestsPerSecond = 12'851.0;
+  snapshot->bodyBytesPerSecond = static_cast<double>(snapshot->bodyBytes) / kSeconds;
+  snapshot->minBodyBytes = 1536;
+  snapshot->maxBodyBytes = 1536;
+  return snapshot;
+}
+
+// The Performance tab of a search request, after a run.
+void SetupPerformanceDemo(ui::App& app, Request& request) {
+  request.url.assign(std::string_view{"{{baseUrl}}/anything/search?q={{term}}&page=1&lang=en"});
+  SyncParamsFromUrl(request);
+  LoadSettings& settings = request.load.emplace();
+  LoadParameter terms;
+  terms.name.assign(std::string_view{"term"});
+  terms.source = ValueSource::list;
+  terms.listValues.assign(std::string_view{"dog\ncat\nbird\nball\nstick"});
+  terms.order = ValueOrder::shuffled;
+  settings.parameters.push_back(std::move(terms));
+  LoadParameter pages;
+  pages.name.assign(std::string_view{"page"});
+  pages.queryParameter = true;
+  pages.source = ValueSource::integerRange;
+  pages.integerFrom = 1;
+  pages.integerTo = 50;
+  settings.parameters.push_back(std::move(pages));
+  settings.durationMs = 30000;
+  settings.connections = 32;
+  settings.seed = 42;
+  Settings& preferences = app.workspace().settings();
+  preferences.maxLoadConnections = 64;
+  preferences.inspectorVisible = false;
+  preferences.requestEditorRatio = 0.4F;
+  app.openRequest(request.id);
+  ui::RequestTab& tab = app.openPerformanceTab(app.activeTabIndex());
+  tab.perf->selectedRow = 2;  // the page
+  app.showLoadSnapshot(tab, MakeDemoSnapshot());
+}
+
 // A plausible response for the documentation screenshots, without network.
 void SetupDemo(ui::App& app, std::string_view demo) {
   Workspace& workspace = app.workspace();
@@ -194,6 +316,10 @@ void SetupDemo(ui::App& app, std::string_view demo) {
   Folder& basics =
       example.collection.root.folders.empty() ? example.collection.root : example.collection.root.folders[0];
   if (basics.requests.size() < 2) {
+    return;
+  }
+  if (demo == "performance") {
+    SetupPerformanceDemo(app, basics.requests[0]);
     return;
   }
   app.openRequest(basics.requests[0].id);

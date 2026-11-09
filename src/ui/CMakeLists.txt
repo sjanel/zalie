@@ -5,9 +5,12 @@ add_library(
   zalie_ui STATIC
   src/app.cpp
   src/assets.cpp
+  src/chart.cpp
   src/dialogs.cpp
   src/icons.cpp
   src/inspector.cpp
+  src/perf-panel.cpp
+  src/perf-tab.cpp
   src/request-panel.cpp
   src/sidebar.cpp
   src/text-view.cpp

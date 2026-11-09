@@ -47,6 +47,21 @@ First version.
 - Snippets in curl, HTTPie, Wget, PowerShell, Python requests, JavaScript fetch, Go net/http, C++ aeronet and raw
   HTTP, editable before copying.
 
+### Performance tests
+
+- A Performance tab per request (Fetch button menu, or the request menu of the sidebar): sends it many times from
+  its own threads, one per connection, limited by duration, number of requests, requests per second or one pass over
+  the values, with an optional warm-up. Confirmation before loading another host than the local machine, or with a
+  method that may change data.
+- Parameter table: every `{{variable}}` and query parameter can vary, from a fixed value, a list, integer, decimal or
+  date ranges, random strings, UUIDs, timestamps or a data file (text, CSV, JSON Lines; never loaded in memory, drop
+  it on its row), in order, at random or shuffled, combined independently, together or in all combinations, with a
+  seed for reproducible runs. Samples, value counts and the first requests are shown before the run.
+- Live dashboard: requests per second, latency percentiles, success and error shares, throughput; charts of the
+  requests per second by status class, of the response time over time, of the latency distribution and of the
+  latency percentiles (hover, hide a series, zoom); status codes, errors by kind and response times per class.
+- Export of a whole run as JSON (settings, seed, totals, percentiles, histograms, statuses, time series).
+
 ### Interface
 
 - Two themes drawn after Zalie: Coton (light) and Nuit (dark). HiDPI aware.

@@ -47,14 +47,6 @@ namespace {
 
 constexpr std::size_t kNoTab = static_cast<std::size_t>(-1);
 
-// Formats into a buffer and returns a null-terminated C string (labels for Dear ImGui).
-template <std::size_t N, class... Args>
-const char* Label(std::array<char, N>& buffer, std::format_string<Args...> fmt, Args&&... args) {
-  const auto result = std::format_to_n(buffer.data(), N - 1, fmt, std::forward<Args>(args)...);
-  *result.out = '\0';
-  return buffer.data();
-}
-
 int Size(std::string_view text) noexcept { return static_cast<int>(text.size()); }
 
 void CenteredText(std::string_view text, ImU32 color) {
@@ -87,8 +79,10 @@ void App::drawTabs() {
     bool open = true;
     const ImGuiTabItemFlags flags = i == requested ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
     ImGui::PushStyleColor(ImGuiCol_Text, i == _activeTab ? CurrentPalette().text : CurrentPalette().textDim);
-    const bool selected = ImGui::BeginTabItem(
-        Label(label, "{}{} {}###tab{}", tab.pending() ? "\xE2\x80\xA2 " : "", method, name, tab.uid), &open, flags);
+    const bool busy = tab.pending() || (tab.perf && tab.perf->running());
+    const bool selected = ImGui::BeginTabItem(Label(label, "{}{}{} {}###tab{}", busy ? "\xE2\x80\xA2 " : "",
+                                                    tab.perf ? "Perf \xC2\xB7 " : "", method, name, tab.uid),
+                                              &open, flags);
     ImGui::PopStyleColor();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && !pRequest->url.empty()) {
       ImGui::SetTooltip("%.*s", Size(pRequest->url), pRequest->url.data());
@@ -159,6 +153,12 @@ void App::drawRequestPanel(ImVec2 size) {
   }
 
   drawBreadcrumb(*pTab, *pRequest);
+  if (pTab->perf) {
+    drawPerformancePanel(*pTab, *pRequest);
+    ImGui::PopStyleVar();
+    ImGui::EndChild();
+    return;
+  }
   drawUrlBar(*pTab, *pRequest);
   Settings& settings = _workspace.settings();
   const float splitter = 8.0F * scale;
@@ -240,9 +240,11 @@ void App::drawUrlBar(RequestTab& tab, Request& request) {
   }
   ImGui::SameLine(0, 4.0F * scale);
   const float sendWidth = 96.0F * scale;
+  const float menuWidth = ImGui::GetFrameHeight() * 0.8F;
+  const float menuGap = 1.0F * scale;
   const bool canSave = tab.requestId == 0 && _workspace.size() != 0;
   const float saveWidth = canSave ? 80.0F * scale : 0.0F;
-  ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - sendWidth - saveWidth -
+  ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - sendWidth - menuGap - menuWidth - saveWidth -
                           (style.ItemSpacing.x * (canSave ? 2.0F : 1.0F)));
   if (tab.focusUrl) {
     ImGui::SetKeyboardFocusHere();
@@ -340,7 +342,35 @@ void App::drawUrlBar(RequestTab& tab, Request& request) {
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip(tab.pending() ? "Cancel (Esc)" : "Fetch (Ctrl+Enter)");
   }
+  // The menu of the Fetch button, joined to it.
+  ImGui::SameLine(0, menuGap);
+  ImGui::PushStyleColor(ImGuiCol_Button, pal.accent);
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, pal.accentHover);
+  ImGui::PushStyleColor(ImGuiCol_ButtonActive, pal.accentActive);
+  ImGui::PushStyleColor(ImGuiCol_Border, pal.accent);
+  if (ImGui::Button("##fetchMenu", ImVec2(menuWidth, 0))) {
+    ImGui::OpenPopup("##fetchMenuPopup");
+  }
+  ImGui::PopStyleColor(4);
+  {
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 max = ImGui::GetItemRectMax();
+    DrawIcon(ImGui::GetWindowDrawList(), Icon::chevronDown, ImVec2((min.x + max.x) * 0.5F, (min.y + max.y) * 0.5F),
+             ImGui::GetFontSize() * 0.7F, pal.onAccent);
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("More ways to send the request");
+  }
   ImGui::PopStyleVar();
+  if (ImGui::BeginPopup("##fetchMenuPopup")) {
+    if (ImGui::MenuItem("Fetch", "Ctrl+Enter", false, !tab.pending())) {
+      sendActiveTab();
+    }
+    if (ImGui::MenuItem("Performance test...")) {
+      openPerformanceTab(_activeTab);
+    }
+    ImGui::EndPopup();
+  }
 
   // Resolved URL preview when variables are used.
   if (View(request.url).contains("{{")) {

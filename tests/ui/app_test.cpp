@@ -11,10 +11,12 @@
 #include <aeronet/http-server-config.hpp>
 #include <aeronet/router.hpp>
 #include <aeronet/single-http-server.hpp>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -26,12 +28,18 @@
 #include "zalie/collection.hpp"
 #include "zalie/exchange.hpp"
 #include "zalie/executor.hpp"
+#include "zalie/file-io.hpp"
 #include "zalie/history.hpp"
+#include "zalie/latency-histogram.hpp"
+#include "zalie/load-runner.hpp"
+#include "zalie/load-settings.hpp"
 #include "zalie/method.hpp"
 #include "zalie/raw-chars.hpp"
 #include "zalie/request.hpp"
 #include "zalie/text-document.hpp"
 #include "zalie/ui/embedded.hpp"
+#include "zalie/ui/perf-tab.hpp"
+#include "zalie/url.hpp"
 #include "zalie/workspace.hpp"
 
 namespace zalie {
@@ -48,6 +56,9 @@ const ImGuiWindow* ActiveWindow(std::string_view part) {
   }
   return nullptr;
 }
+
+// Whether a modal popup is open.
+bool ModalOpen() { return ImGui::GetTopMostPopupModal() != nullptr; }
 
 class AppTest : public test::ImGuiContextFixture {
  protected:
@@ -101,6 +112,50 @@ class AppTest : public test::ImGuiContextFixture {
     response.body.raw.append(body);
     response.body.analyze(contentType);
     app->showExchange(*app->activeTab(), std::move(exchange));
+  }
+
+  // Renders frames until the Performance tab has the plan of its request as it is now.
+  bool waitPlan(ui::RequestTab& tab) {
+    const auto deadline = std::chrono::steady_clock::now() + 20s;
+    while (std::chrono::steady_clock::now() < deadline) {
+      frame();
+      if (tab.perf->planCurrent()) {
+        return true;
+      }
+      app->planCompiler().waitIdle(50ms);
+    }
+    return false;
+  }
+
+  // Renders frames until the last run of the Performance tab is over.
+  bool waitRun(ui::RequestTab& tab) {
+    const auto deadline = std::chrono::steady_clock::now() + 20s;
+    while (std::chrono::steady_clock::now() < deadline) {
+      frame();
+      if (tab.perf->snapshot && tab.perf->snapshot->phase == LoadPhase::finished && !tab.perf->running()) {
+        return true;
+      }
+      std::this_thread::sleep_for(5ms);
+    }
+    return false;
+  }
+
+  // Focusing a tab makes the Performance tabs list their rows and compile their plan again: the tests edit the
+  // requests directly, without the interface.
+  void refresh() { app->openPerformanceTab(app->activeTabIndex()); }
+
+  // An unsaved request to 'path' of the local server, and its Performance tab.
+  ui::RequestTab& perfTabFor(std::string_view url, Method method = Method::get) {
+    ui::RequestTab& source = app->newScratchTab();
+    source.scratch.url.assign(url);
+    source.scratch.method = method;
+    SyncParamsFromUrl(source.scratch);
+    frame();
+    return app->openPerformanceTab(app->activeTabIndex());
+  }
+
+  [[nodiscard]] static std::string LocalUrl(const aeronet::SingleHttpServer& server, std::string_view path) {
+    return "http://127.0.0.1:" + std::to_string(server.port()) + std::string(path);
   }
 
   std::uint64_t exampleRequestId(std::size_t index) {
@@ -561,6 +616,278 @@ TEST_F(AppTest, DarkThemeAndHiDpi) {
   app->setDpiScale(1.5F);
   frame(2);
   EXPECT_FLOAT_EQ(ImGui::GetStyle().FontScaleDpi, 1.5F);
+}
+
+TEST_F(AppTest, PerformanceTabOfASavedRequest) {
+  app->openRequest(exampleRequestId(0));  // {{baseUrl}}/json
+  frame(2);
+  ui::RequestTab& tab = app->openPerformanceTab(app->activeTabIndex());
+  ASSERT_TRUE(tab.perf);
+  EXPECT_EQ(app->tabCount(), 2U);
+  EXPECT_EQ(app->activeTabIndex(), 1U);
+  EXPECT_EQ(tab.requestId, exampleRequestId(0));
+  // Opened again from the request or from itself: focused, not duplicated.
+  app->openPerformanceTab(0);
+  app->openPerformanceTab(1);
+  EXPECT_EQ(app->tabCount(), 2U);
+  EXPECT_EQ(app->activeTabIndex(), 1U);
+  ASSERT_TRUE(waitPlan(tab));
+  ASSERT_EQ(tab.perf->rows.size(), 1U);
+  EXPECT_EQ(View(tab.perf->rows[0].name), "baseUrl");
+  EXPECT_EQ(View(tab.perf->rows[0].defaultValue), "https://httpbin.org");
+  EXPECT_EQ(tab.perf->preview->plan->host(), "httpbin.org");
+  EXPECT_FALSE(app->animating());
+  // Opening the request focuses its request tab, not its Performance tab.
+  app->openRequest(exampleRequestId(0));
+  EXPECT_EQ(app->activeTabIndex(), 0U);
+  // Not saved with the open tabs: only its request.
+  app->shutdown();
+  ASSERT_EQ(workspace.state().openTabs.size(), 1U);
+  EXPECT_EQ(workspace.state().openTabs[0], exampleRequestId(0));
+}
+
+TEST_F(AppTest, PerformanceRunAgainstALocalServer) {
+  std::atomic<int> hits{0};
+  aeronet::Router router;
+  router.setPath(aeronet::http::Method::GET, "/items", [&hits](const aeronet::HttpRequestView& req) {
+    hits.fetch_add(1, std::memory_order_relaxed);
+    return req.makeResponse(200, R"({"ok":true})", "application/json");
+  });
+  aeronet::SingleHttpServer server(aeronet::HttpServerConfig{}.withPort(0).withPollInterval(20ms), std::move(router));
+  server.start();
+
+  ui::RequestTab& source = app->newScratchTab();
+  source.scratch.name.assign(std::string_view{"Items"});
+  source.scratch.url.assign(LocalUrl(server, "/items?page=1&q=dog"));
+  SyncParamsFromUrl(source.scratch);
+  LoadSettings& settings = source.scratch.load.emplace();
+  LoadParameter page;
+  page.name.assign(std::string_view{"page"});
+  page.queryParameter = true;
+  page.source = ValueSource::integerRange;
+  page.integerFrom = 1;
+  page.integerTo = 50;
+  settings.parameters.push_back(std::move(page));
+  settings.maxRequests = 200;
+  settings.connections = 2;
+  settings.seed = 42;
+  frame();
+  ui::RequestTab& tab = app->openPerformanceTab(app->activeTabIndex());
+  ASSERT_TRUE(waitPlan(tab));
+  // The query parameters are rows: the varied page and the fixed term.
+  ASSERT_EQ(tab.perf->rows.size(), 2U);
+  EXPECT_EQ(tab.perf->rows[0].parameter, 0U);
+  EXPECT_TRUE(tab.perf->rows[1].queryParameter);
+  EXPECT_EQ(View(tab.perf->preview->samples[0]), "1, 2, 3, 4, 5");
+  ASSERT_FALSE(tab.perf->preview->requests.empty());
+  EXPECT_TRUE(View(tab.perf->preview->requests[0].line).ends_with("/items?page=1&q=dog"));
+
+  frame(2);
+  press(ImGuiMod_Ctrl | ImGuiKey_Enter);  // runs the active Performance tab
+  ASSERT_TRUE(waitRun(tab));
+  const std::shared_ptr<const LoadSnapshot> snapshot = tab.perf->snapshot;
+  EXPECT_TRUE(snapshot->setupError.empty()) << View(snapshot->setupError);
+  EXPECT_EQ(snapshot->counts[static_cast<std::size_t>(LoadClass::status2xx)], 200U);
+  EXPECT_EQ(hits.load(), 200);
+  EXPECT_EQ(tab.perf->runSettings.seed, 42U);
+  EXPECT_EQ(tab.perf->charts.pSnapshot, snapshot.get());  // drawn
+  EXPECT_FALSE(app->animating());
+
+  // Without limit, until stopped (Esc).
+  source.scratch.load->maxRequests = 0;
+  source.scratch.load->durationMs = 0;
+  refresh();
+  ASSERT_TRUE(waitPlan(tab));
+  app->sendActiveTab();
+  const auto deadline = std::chrono::steady_clock::now() + 20s;
+  while (std::chrono::steady_clock::now() < deadline && (!tab.perf->running() || tab.perf->snapshot->requests() < 10)) {
+    frame();
+    std::this_thread::sleep_for(5ms);
+  }
+  ASSERT_TRUE(tab.perf->running());
+  EXPECT_FALSE(app->animating());  // a run wakes the interface, it does not animate it
+  app->cancelActiveTab();
+  ASSERT_TRUE(waitRun(tab));
+  EXPECT_GE(tab.perf->snapshot->requests(), 10U);
+
+  // The run as JSON.
+  const std::filesystem::path report = home.path() / "runs" / "items.json";
+  ASSERT_TRUE(app->exportRun(tab, report));
+  auto content = ReadFile(report);
+  ASSERT_TRUE(content.has_value());
+  EXPECT_TRUE(View(*content).contains(R"("name": "Items")"));
+  EXPECT_TRUE(View(*content).contains(R"("durationMs": 0)"));
+  EXPECT_TRUE(View(*content).contains(R"("status": 200)"));
+  EXPECT_FALSE(app->exportRun(tab, home.path()));  // a directory
+}
+
+TEST_F(AppTest, PerformanceRunsNeedAConfirmationToChangeOrLeaveTheMachine) {
+  aeronet::Router router;
+  router.setPath(aeronet::http::Method::POST, "/orders",
+                 [](const aeronet::HttpRequestView& req) { return req.makeResponse(201, "created", "text/plain"); });
+  aeronet::SingleHttpServer server(aeronet::HttpServerConfig{}.withPort(0).withPollInterval(20ms), std::move(router));
+  server.start();
+  ui::RequestTab& tab = perfTabFor(LocalUrl(server, "/orders"), Method::post);
+  ASSERT_TRUE(waitPlan(tab));
+  // Asked with Ctrl+Enter, whose Enter does not confirm it at once. Refused: nothing is sent.
+  frame(2);
+  press(ImGuiMod_Ctrl | ImGuiKey_Enter);
+  frame();
+  ASSERT_TRUE(ModalOpen());
+  EXPECT_FALSE(tab.perf->running());
+  press(ImGuiKey_Escape);
+  frame();
+  EXPECT_FALSE(ModalOpen());
+  EXPECT_FALSE(tab.perf->running());
+  EXPECT_FALSE(tab.perf->snapshot);
+  // Accepted with Enter.
+  Request& request = *app->requestOf(tab);
+  request.load.emplace().maxRequests = 5;
+  refresh();
+  ASSERT_TRUE(waitPlan(tab));
+  app->sendActiveTab();
+  frame(2);
+  ASSERT_TRUE(ModalOpen());
+  press(ImGuiKey_Enter);
+  ASSERT_TRUE(waitRun(tab));
+  EXPECT_EQ(tab.perf->snapshot->counts[static_cast<std::size_t>(LoadClass::status2xx)], 5U);
+
+  // Another host than the local machine, even with GET.
+  ui::RequestTab& remote = perfTabFor("http://example.invalid/x");
+  ASSERT_TRUE(waitPlan(remote));
+  EXPECT_FALSE(IsLocalHost(remote.perf->preview->plan->host()));
+  app->sendActiveTab();
+  frame(2);
+  EXPECT_TRUE(ModalOpen());
+  press(ImGuiKey_Escape);
+  EXPECT_FALSE(remote.perf->running());
+}
+
+TEST_F(AppTest, ClosingARunningPerformanceTabDoesNotWaitForTheRun) {
+  aeronet::Router router;
+  router.setPath(aeronet::http::Method::GET, "/slow", [](const aeronet::HttpRequestView& req) {
+    std::this_thread::sleep_for(300ms);
+    return req.makeResponse(200, "late", "text/plain");
+  });
+  aeronet::SingleHttpServer server(aeronet::HttpServerConfig{}.withPort(0).withPollInterval(20ms), std::move(router));
+  server.start();
+  ui::RequestTab& tab = perfTabFor(LocalUrl(server, "/slow"));
+  app->requestOf(tab)->load.emplace().durationMs = 0;  // no limit
+  app->requestOf(tab)->load->connections = 2;
+  refresh();
+  ASSERT_TRUE(waitPlan(tab));
+  app->sendActiveTab();
+  const auto deadline = std::chrono::steady_clock::now() + 20s;
+  while (std::chrono::steady_clock::now() < deadline && (!tab.perf->running() || tab.perf->snapshot->inFlight == 0)) {
+    frame();
+    std::this_thread::sleep_for(5ms);
+  }
+  ASSERT_TRUE(tab.perf->running());
+  const std::size_t nbTabs = app->tabCount();
+  const auto start = std::chrono::steady_clock::now();
+  app->closeTab(app->activeTabIndex());
+  EXPECT_LT(std::chrono::steady_clock::now() - start, 150ms);
+  EXPECT_EQ(app->tabCount(), nbTabs - 1);
+  // Released once its requests in flight end.
+  for (int idx = 0; idx < 50; ++idx) {
+    frame();
+    std::this_thread::sleep_for(10ms);
+  }
+}
+
+TEST_F(AppTest, ADroppedFileBecomesTheDataFileOfItsRow) {
+  const std::filesystem::path csv = home.path() / "users.csv";
+  {
+    std::ofstream file(csv);
+    file << "id,name\n1,zalie\n2,physalie\n";
+  }
+  ui::RequestTab& tab = perfTabFor("http://127.0.0.1:1/users/{{user}}");
+  ASSERT_TRUE(waitPlan(tab));
+  ASSERT_EQ(tab.perf->rows.size(), 1U);
+  EXPECT_TRUE(tab.perf->rows[0].undefined);
+  EXPECT_FALSE(tab.perf->preview->plan->valid());
+
+  // No data file row under the mouse nor selected: imported as a collection, which it is not.
+  const std::filesystem::path dropped[] = {csv};
+  app->onFilesDropped(dropped);
+  frame(2);
+  EXPECT_TRUE(app->toasts().back().error);
+  Request& request = *app->requestOf(tab);
+  EXPECT_FALSE(request.load.has_value());
+
+  // The selected row reads a data file: it receives the file.
+  LoadParameter users;
+  users.name.assign(std::string_view{"user"});
+  users.source = ValueSource::dataFile;
+  request.load.emplace().parameters.push_back(std::move(users));
+  refresh();
+  frame();
+  app->onFilesDropped(dropped);
+  frame(2);
+  const LoadParameter& parameter = request.load->parameters[0];
+  EXPECT_EQ(View(parameter.filePath), View(PathToUtf8(csv)));  // outside the base directory: absolute
+  EXPECT_EQ(parameter.fileFormat, DataFileFormat::csv);
+  ASSERT_TRUE(waitPlan(tab));
+  ASSERT_TRUE(tab.perf->preview->plan->valid()) << View(tab.perf->preview->plan->issues()[0].message);
+  ASSERT_NE(tab.perf->preview->dataFiles[0], nullptr);
+  EXPECT_EQ(tab.perf->preview->dataFiles[0]->nbRows(), 2U);
+  EXPECT_EQ(View(tab.perf->preview->samples[0]), "1, 2");
+  frame(2);  // the editor shows the first rows of the file
+
+  // Every source has its editor.
+  for (int source = 0; source <= static_cast<int>(ValueSource::dataFile); ++source) {
+    request.load->parameters[0].source = static_cast<ValueSource>(source);
+    refresh();
+    frame(2);
+  }
+}
+
+TEST_F(AppTest, DashboardOfALongRunStaysFast) {
+  app->openRequest(exampleRequestId(0));
+  frame();
+  ui::RequestTab& tab = app->openPerformanceTab(app->activeTabIndex());
+  auto snapshot = std::make_shared<LoadSnapshot>();
+  snapshot->phase = LoadPhase::finished;
+  snapshot->connections = 8;
+  snapshot->elapsedSeconds = 3600.0;
+  for (std::uint32_t second = 0; second < 3600; ++second) {
+    LoadSecond point{.counts = {1000 + (second % 100), second % 7, second % 13, second % 5, second % 3},
+                     .bodyBytes = 512'000,
+                     .p50Ns = 2'000'000 + (second * 100),
+                     .p90Ns = 4'000'000,
+                     .p99Ns = 9'000'000,
+                     .maxNs = 40'000'000};
+    snapshot->series.push_back(point);
+    for (std::size_t outcome = 0; outcome < kNbLoadClasses; ++outcome) {
+      snapshot->counts[outcome] += point.counts[outcome];
+    }
+  }
+  for (std::uint64_t idx = 0; idx < 10'000; ++idx) {
+    snapshot->totalHistogram.record(1'000'000 + (idx * 1000));
+    snapshot->headHistogram.record(500'000 + (idx * 1000));
+  }
+  snapshot->total.count = 10'000;
+  snapshot->total.p50Ns = 6'000'000;
+  snapshot->total.p99Ns = 10'900'000;  // p90 and p99.9 left at 0: no marker on the logarithmic axis
+  snapshot->statuses.push_back({.count = 3'600'000, .status = 200});
+  snapshot->statuses.push_back({.count = 21'600, .status = 404});
+  snapshot->errors[static_cast<std::size_t>(LoadErrorKind::timeout)] = {.count = 3600, .firstMessage = "timeout"};
+  snapshot->meanRequestsPerSecond = 1050.0;
+  snapshot->clientSaturated = true;
+  snapshot->clientLoad = 0.95;
+  app->showLoadSnapshot(tab, snapshot);
+  frame(2);
+  EXPECT_EQ(tab.perf->charts.times.size(), 3600U);
+  EXPECT_GT(tab.perf->charts.rateChart.nbPoints, 0U);
+  EXPECT_LT(tab.perf->charts.rateChart.nbPoints, 3600U);  // one point per pixel at most
+  const auto start = std::chrono::steady_clock::now();
+  static constexpr int kFrames = 10;
+  frame(kFrames);
+  EXPECT_LT((std::chrono::steady_clock::now() - start) / kFrames, 50ms);
+  EXPECT_GT(LastFrameVertices(), 5000);
+  EXPECT_EQ(LastFrameNonFiniteVertices(), 0);
+  // A fake run exports too.
+  EXPECT_TRUE(app->exportRun(tab, home.path() / "fake.json"));
 }
 
 }  // namespace

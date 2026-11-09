@@ -71,6 +71,8 @@ class TextTemplate {
 
 // A header sent by a run.
 struct LoadHeader {
+  using trivially_relocatable = AllTriviallyRelocatable<TextTemplate>;
+
   TextTemplate value;
   // Credentials "user:password" of a Basic authentication with generated values: 'value' is then not used.
   TextTemplate basicCredentials;
@@ -80,19 +82,17 @@ struct LoadHeader {
   // Given with the body.
   bool isContentType{false};
   bool isBasicAuth{false};
-
-  using trivially_relocatable = AllTriviallyRelocatable<TextTemplate>;
 };
 
 // What prevents a run: shown before it starts.
 struct LoadPlanIssue {
   static constexpr std::uint32_t kNoParameter = std::numeric_limits<std::uint32_t>::max();
 
+  using trivially_relocatable = AllTriviallyRelocatable<RawChars32>;
+
   RawChars32 message;
   // The parameter concerned, or kNoParameter.
   std::uint32_t parameter{kNoParameter};
-
-  using trivially_relocatable = AllTriviallyRelocatable<RawChars32>;
 };
 
 // A request compiled for a run: literal parts and variable slots, and the generators feeding them. The header and
@@ -126,6 +126,14 @@ class LoadPlan {
   // Number of distinct values of a parameter of the settings: 1 for a fixed one, 0 when it is unbounded.
   [[nodiscard]] std::uint64_t valueCount(std::uint32_t parameter) const noexcept;
 
+  // The generated variable of a parameter of the settings, ValueGenerators::kNoVariable for a fixed or invalid one.
+  [[nodiscard]] std::uint32_t parameterVariable(std::uint32_t parameter) const noexcept {
+    return _parameterVariables[parameter];
+  }
+
+  // The host the requests go to, empty when a generated value is part of it (or when the plan is not valid).
+  [[nodiscard]] std::string_view host() const noexcept { return _host; }
+
   [[nodiscard]] Method method() const noexcept { return _resolved.method; }
   [[nodiscard]] const RequestSettings& settings() const noexcept { return _resolved.settings; }
   [[nodiscard]] const TextTemplate& url() const noexcept { return _url; }
@@ -151,6 +159,7 @@ class LoadPlan {
   amc::vector<LoadPlanIssue> _issues;
   amc::vector<RawChars32> _warnings;
   amc::vector<std::uint32_t> _parameterVariables;
+  std::string_view _host;
   std::size_t _headerLinesBytes{0};
   bool _urlNeedsScheme{false};
   bool _isConstant{true};

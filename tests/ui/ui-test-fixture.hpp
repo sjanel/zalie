@@ -6,6 +6,7 @@
 #include <imgui.h>
 #include <imgui_impl_null.h>
 
+#include <cmath>
 #include <string>
 #include <string_view>
 
@@ -63,6 +64,20 @@ class ImGuiContextFixture : public ::testing::Test {
   [[nodiscard]] static int LastFrameVertices() {
     const ImDrawData* pDrawData = ImGui::GetDrawData();
     return pDrawData == nullptr ? 0 : pDrawData->TotalVtxCount;
+  }
+
+  // Number of vertices of the last rendered frame at a NaN or infinite position: a coordinate the UI failed to map.
+  [[nodiscard]] static int LastFrameNonFiniteVertices() {
+    const ImDrawData* pDrawData = ImGui::GetDrawData();
+    int count = 0;
+    if (pDrawData != nullptr) {
+      for (const ImDrawList* pDrawList : pDrawData->CmdLists) {
+        for (const ImDrawVert& vertex : pDrawList->VtxBuffer) {
+          count += static_cast<int>(!std::isfinite(vertex.pos.x) || !std::isfinite(vertex.pos.y));
+        }
+      }
+    }
+    return count;
   }
 
   // Input helpers (applied at the next frame).

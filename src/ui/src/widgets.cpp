@@ -45,14 +45,6 @@ int ResizeCallback(ImGuiInputTextCallbackData* pData) {
   return 0;
 }
 
-template <class... Args>
-std::string_view Format(std::span<char> buffer, std::format_string<Args...> fmt, Args&&... args) {
-  const auto result =
-      std::format_to_n(buffer.data(), static_cast<std::ptrdiff_t>(buffer.size()), fmt, std::forward<Args>(args)...);
-  return {buffer.data(),
-          static_cast<std::size_t>(std::min<std::ptrdiff_t>(result.size, static_cast<std::ptrdiff_t>(buffer.size())))};
-}
-
 }  // namespace
 
 Fonts& GetFonts() noexcept {
@@ -150,7 +142,7 @@ void StatusPill(std::int16_t status, std::string_view reason, ExchangeState stat
   } else if (state == ExchangeState::cancelled) {
     label = "Cancelled";
   } else {
-    label = Format(buffer, "{} {}", status, reason);
+    label = FormatTo(buffer, "{} {}", status, reason);
   }
   const ImVec2 padding(ImGui::GetStyle().FramePadding.x, ImGui::GetStyle().FramePadding.y * 0.6F);
   const ImVec2 textSize = ImGui::CalcTextSize(label.data(), label.data() + label.size());
@@ -270,33 +262,33 @@ bool Splitter(const char* strId, bool vertical, float thickness, float& size, fl
 std::string_view FormatBytes(std::uint64_t bytes, std::span<char> buffer) {
   static constexpr double kUnit = 1024.0;
   if (bytes < 1024) {
-    return Format(buffer, "{} B", bytes);
+    return FormatTo(buffer, "{} B", bytes);
   }
   const auto value = static_cast<double>(bytes);
   if (value < kUnit * kUnit) {
-    return Format(buffer, "{:.1f} KB", value / kUnit);
+    return FormatTo(buffer, "{:.1f} KB", value / kUnit);
   }
   if (value < kUnit * kUnit * kUnit) {
-    return Format(buffer, "{:.1f} MB", value / (kUnit * kUnit));
+    return FormatTo(buffer, "{:.1f} MB", value / (kUnit * kUnit));
   }
-  return Format(buffer, "{:.2f} GB", value / (kUnit * kUnit * kUnit));
+  return FormatTo(buffer, "{:.2f} GB", value / (kUnit * kUnit * kUnit));
 }
 
 std::string_view FormatDuration(std::chrono::nanoseconds duration, std::span<char> buffer) {
   const auto ns = static_cast<double>(duration.count());
   if (ns < 1e6) {
-    return Format(buffer, "{:.0f} \xC2\xB5s", ns / 1e3);
+    return FormatTo(buffer, "{:.0f} \xC2\xB5s", ns / 1e3);
   }
   if (ns < 1e7) {
-    return Format(buffer, "{:.1f} ms", ns / 1e6);
+    return FormatTo(buffer, "{:.1f} ms", ns / 1e6);
   }
   if (ns < 1e9) {
-    return Format(buffer, "{:.0f} ms", ns / 1e6);
+    return FormatTo(buffer, "{:.0f} ms", ns / 1e6);
   }
   if (ns < 6e10) {
-    return Format(buffer, "{:.2f} s", ns / 1e9);
+    return FormatTo(buffer, "{:.2f} s", ns / 1e9);
   }
-  return Format(buffer, "{:.0f} min {:.0f} s", std::floor(ns / 6e10), std::fmod(ns / 1e9, 60.0));
+  return FormatTo(buffer, "{:.0f} min {:.0f} s", std::floor(ns / 6e10), std::fmod(ns / 1e9, 60.0));
 }
 
 std::string_view FormatAgo(std::int64_t timestampMs, std::span<char> buffer) {
@@ -304,18 +296,18 @@ std::string_view FormatAgo(std::int64_t timestampMs, std::span<char> buffer) {
   const std::int64_t nowMs = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
   const std::int64_t seconds = std::max<std::int64_t>(0, (nowMs - timestampMs) / 1000);
   if (seconds < 10) {
-    return Format(buffer, "just now");
+    return FormatTo(buffer, "just now");
   }
   if (seconds < 60) {
-    return Format(buffer, "{} s ago", seconds);
+    return FormatTo(buffer, "{} s ago", seconds);
   }
   if (seconds < 3600) {
-    return Format(buffer, "{} min ago", seconds / 60);
+    return FormatTo(buffer, "{} min ago", seconds / 60);
   }
   if (seconds < 86400) {
-    return Format(buffer, "{} h ago", seconds / 3600);
+    return FormatTo(buffer, "{} h ago", seconds / 3600);
   }
-  return Format(buffer, "{} d ago", seconds / 86400);
+  return FormatTo(buffer, "{} d ago", seconds / 86400);
 }
 
 std::string_view FormatClock(std::chrono::system_clock::time_point time, std::span<char> buffer) {
@@ -328,7 +320,7 @@ std::string_view FormatClock(std::chrono::system_clock::time_point time, std::sp
   localtime_r(&seconds, &local);
 #endif
   const auto millis = duration_cast<milliseconds>(time.time_since_epoch()).count() % 1000;
-  return Format(buffer, "{:02}:{:02}:{:02}.{:03}", local.tm_hour, local.tm_min, local.tm_sec, millis);
+  return FormatTo(buffer, "{:02}:{:02}:{:02}.{:03}", local.tm_hour, local.tm_min, local.tm_sec, millis);
 }
 
 void CopyToClipboard(std::string_view text) {

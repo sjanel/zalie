@@ -8,9 +8,9 @@ Zalie has three columns, all resizable (drag the separators) and the side ones c
 | ---- | ------- |
 | Top bar | Logo, environment of the collection of the active request, buttons to toggle the sidebar (++ctrl+b++), the response layout, the inspector (++ctrl+j++), the theme, and the main menu |
 | Sidebar (left) | Filter (++ctrl+k++), import and "new" buttons, the **Collections** tree and the **History** of the sent requests |
-| Center | Request tabs, where the request lives (`Collection / Folder / Request`: click its name to rename it), URL bar, request editor (Params, Headers, Body, Auth, Settings, Docs) and the response viewer, below it or beside it |
+| Center | Request tabs, where the request lives (`Collection / Folder / Request`: click its name to rename it), URL bar, request editor (Params, Headers, Body, Auth, Settings, Docs) and the response viewer, below it or beside it. A request can also have a [Performance tab](performance.md) |
 | Inspector (right) | Configurable cards: code snippet, timeline, variables, response headers, notes. See [Inspector](inspector.md) |
-| Status bar | Requests in flight (with a tiny Zalie running), save state, version |
+| Status bar | Requests in flight (with a tiny Zalie running), performance runs in progress, save state, version |
 
 The separator between the request editor and the response is draggable too. Sizes, visibility of the panels, layout,
 theme and zoom are remembered.
