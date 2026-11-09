@@ -22,6 +22,7 @@ static_assert(amc::is_trivially_relocatable_v<KeyValue>);
 static_assert(amc::is_trivially_relocatable_v<Auth>);
 static_assert(amc::is_trivially_relocatable_v<Request>);
 static_assert(amc::is_trivially_relocatable_v<Environment>);
+static_assert(amc::is_trivially_relocatable_v<Folder>);
 
 Request MakeRequest(std::string_view name) {
   Request req;

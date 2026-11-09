@@ -144,7 +144,7 @@ bool RemoveFolder(Folder& root, std::uint64_t folderId) {
   if (pParent == nullptr) {
     return false;
   }
-  std::erase_if(pParent->folders, [folderId](const Folder& folder) { return folder.id == folderId; });
+  erase_if(pParent->folders, [folderId](const Folder& folder) { return folder.id == folderId; });
   return true;
 }
 

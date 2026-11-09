@@ -12,8 +12,10 @@ add_library(
   src/executor.cpp
   src/file-io.cpp
   src/history.cpp
+  src/http-client-setup.cpp
   src/json-format.cpp
   src/json-path.cpp
+  src/load-runner.cpp
   src/paths.cpp
   src/persistence.cpp
   src/postman-import.cpp

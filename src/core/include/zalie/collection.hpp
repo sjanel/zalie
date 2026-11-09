@@ -3,7 +3,6 @@
 #include <amc/vector.hpp>
 #include <cstddef>
 #include <cstdint>
-#include <vector>
 
 #include "zalie/key-value.hpp"
 #include "zalie/raw-chars.hpp"
@@ -15,9 +14,10 @@ namespace zalie {
 struct Folder {
   bool operator==(const Folder&) const = default;
 
+  using trivially_relocatable = AllTriviallyRelocatable<RawChars32, amc::vector<Folder>, amc::vector<Request>>;
+
   RawChars32 name;
-  // std::vector (not amc::vector) on purpose: it is the one guaranteed to accept the incomplete type Folder.
-  std::vector<Folder> folders;
+  amc::vector<Folder> folders;
   amc::vector<Request> requests;
   std::uint64_t id{0};
 };
@@ -26,10 +26,10 @@ struct Folder {
 struct Environment {
   bool operator==(const Environment&) const = default;
 
+  using trivially_relocatable = AllTriviallyRelocatable<RawChars32, KeyValues>;
+
   RawChars32 name;
   KeyValues variables;
-
-  using trivially_relocatable = AllTriviallyRelocatable<RawChars32, KeyValues>;
 };
 
 // A collection of requests, stored in its own file.

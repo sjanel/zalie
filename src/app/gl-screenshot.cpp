@@ -8,8 +8,8 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <memory>
 #include <string>
-#include <vector>
 
 namespace zalie::app {
 
@@ -81,16 +81,17 @@ void OffscreenTarget::Unbind() {
 }
 
 bool OffscreenTarget::savePng(const std::filesystem::path& path) const {
-  const auto stride = static_cast<std::size_t>(_width) * 4U;
-  std::vector<unsigned char> pixels(stride * static_cast<std::size_t>(_height));
+  const std::size_t stride = static_cast<std::size_t>(_width) * 4U;
+  auto pixels = std::make_unique_for_overwrite<std::byte[]>(stride * static_cast<std::size_t>(_height));
   bind();
   glPixelStorei(GL_PACK_ALIGNMENT, 1);
-  glReadPixels(0, 0, _width, _height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+  glReadPixels(0, 0, _width, _height, GL_RGBA, GL_UNSIGNED_BYTE, reinterpret_cast<void*>(pixels.get()));
   Unbind();
   // OpenGL rows go bottom-up: write them flipped.
   stbi_flip_vertically_on_write(1);
   const std::string file = path.string();
-  return stbi_write_png(file.c_str(), _width, _height, 4, pixels.data(), static_cast<int>(stride)) != 0;
+  return stbi_write_png(file.c_str(), _width, _height, 4, reinterpret_cast<const void*>(pixels.get()),
+                        static_cast<int>(stride)) != 0;
 }
 
 }  // namespace zalie::app
