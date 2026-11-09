@@ -10,6 +10,7 @@
 #include <iterator>
 #include <mutex>
 #include <random>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -33,9 +34,53 @@ std::uint64_t RandomU64() {
   return engine();
 }
 
-// Appends the value of a dynamic variable to 'out'. Returns false if 'name' is not a dynamic variable (or an undefined
-// environment variable).
-bool AppendDynamic(std::string_view name, RawChars32& out) {
+void AppendWordBytes(std::uint64_t word, std::span<std::uint8_t, 8> bytes) noexcept {
+  for (std::size_t idx = 0; idx < bytes.size(); ++idx) {
+    bytes[idx] = static_cast<std::uint8_t>(word >> (8U * idx));
+  }
+}
+
+void AddUnresolved(std::string_view name, UnresolvedNames* pUnresolved) {
+  if (pUnresolved != nullptr && !std::ranges::contains(*pUnresolved, name)) {
+    pUnresolved->push_back(name);
+  }
+}
+
+void InterpolateImpl(std::string_view text, const VariableScope& scope, RawChars32& out, UnresolvedNames* pUnresolved,
+                     int depth) {
+  while (!text.empty()) {
+    const std::size_t openPos = text.find("{{");
+    if (openPos == std::string_view::npos) {
+      out.append(text);
+      return;
+    }
+    const std::size_t closePos = text.find("}}", openPos + 2);
+    if (closePos == std::string_view::npos) {
+      out.append(text);
+      return;
+    }
+    out.append(text.substr(0, openPos));
+    const std::string_view reference = text.substr(openPos, closePos + 2 - openPos);
+    const std::string_view name = Trim(text.substr(openPos + 2, closePos - openPos - 2));
+    text.remove_prefix(closePos + 2);
+
+    const std::string_view* pValue = name.empty() ? nullptr : scope.find(name);
+    if (pValue != nullptr) {
+      if (depth < kMaxDepth && pValue->contains("{{")) {
+        InterpolateImpl(*pValue, scope, out, pUnresolved, depth + 1);
+      } else {
+        out.append(*pValue);
+      }
+    } else if (name.empty() || !AppendDynamicVariable(name, out)) {
+      out.append(reference);
+      AddUnresolved(name, pUnresolved);
+    }
+  }
+}
+
+}  // namespace
+
+bool AppendDynamicVariable(std::string_view name, RawChars32& out) {
   using namespace std::chrono;
   if (name == "$timestamp") {
     AppendInt(out, duration_cast<seconds>(system_clock::now().time_since_epoch()).count());
@@ -74,46 +119,6 @@ bool AppendDynamic(std::string_view name, RawChars32& out) {
   out.append(std::string_view(pValue));
   return true;
 }
-
-void AddUnresolved(std::string_view name, UnresolvedNames* pUnresolved) {
-  if (pUnresolved != nullptr && !std::ranges::contains(*pUnresolved, name)) {
-    pUnresolved->push_back(name);
-  }
-}
-
-void InterpolateImpl(std::string_view text, const VariableScope& scope, RawChars32& out, UnresolvedNames* pUnresolved,
-                     int depth) {
-  while (!text.empty()) {
-    const std::size_t openPos = text.find("{{");
-    if (openPos == std::string_view::npos) {
-      out.append(text);
-      return;
-    }
-    const std::size_t closePos = text.find("}}", openPos + 2);
-    if (closePos == std::string_view::npos) {
-      out.append(text);
-      return;
-    }
-    out.append(text.substr(0, openPos));
-    const std::string_view reference = text.substr(openPos, closePos + 2 - openPos);
-    const std::string_view name = Trim(text.substr(openPos + 2, closePos - openPos - 2));
-    text.remove_prefix(closePos + 2);
-
-    const std::string_view* pValue = name.empty() ? nullptr : scope.find(name);
-    if (pValue != nullptr) {
-      if (depth < kMaxDepth && pValue->contains("{{")) {
-        InterpolateImpl(*pValue, scope, out, pUnresolved, depth + 1);
-      } else {
-        out.append(*pValue);
-      }
-    } else if (name.empty() || !AppendDynamic(name, out)) {
-      out.append(reference);
-      AddUnresolved(name, pUnresolved);
-    }
-  }
-}
-
-}  // namespace
 
 void VariableScope::addLayer(const KeyValues& variables) {
   for (const KeyValue& variable : variables) {
@@ -167,26 +172,28 @@ RawChars32 Interpolate(std::string_view text, const VariableScope& scope, Unreso
 }
 
 RawChars32 RandomUuid() {
+  static constexpr std::size_t kUuidLength = 36;
+  RawChars32 ret(kUuidLength);
+  AppendUuid(RandomU64(), RandomU64(), ret);
+  return ret;
+}
+
+void AppendUuid(std::uint64_t high, std::uint64_t low, RawChars32& out) {
   std::array<std::uint8_t, 16> bytes{};
-  for (std::size_t i = 0; i < bytes.size(); i += 8) {
-    const std::uint64_t value = RandomU64();
-    for (std::size_t j = 0; j < 8; ++j) {
-      bytes[i + j] = static_cast<std::uint8_t>(value >> (8U * j));
-    }
-  }
+  AppendWordBytes(high, std::span<std::uint8_t, 8>(bytes.data(), 8));
+  AppendWordBytes(low, std::span<std::uint8_t, 8>(bytes.data() + 8, 8));
   bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0FU) | 0x40U);  // version 4
   bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3FU) | 0x80U);  // RFC 4122 variant
   static constexpr char kHex[] = "0123456789abcdef";
   static constexpr std::size_t kUuidLength = 36;
-  RawChars32 ret(kUuidLength);
+  out.ensureAvailableCapacity(kUuidLength);
   for (std::size_t i = 0; i < bytes.size(); ++i) {
     if (i == 4 || i == 6 || i == 8 || i == 10) {
-      ret.unchecked_push_back('-');
+      out.unchecked_push_back('-');
     }
-    ret.unchecked_push_back(kHex[bytes[i] >> 4U]);
-    ret.unchecked_push_back(kHex[bytes[i] & 0xFU]);
+    out.unchecked_push_back(kHex[bytes[i] >> 4U]);
+    out.unchecked_push_back(kHex[bytes[i] & 0xFU]);
   }
-  return ret;
 }
 
 }  // namespace zalie

@@ -78,6 +78,27 @@ default value: files written by another version of Zalie load fine.
 
 The key order is stable, and the output pretty-printed with one key per line: collections diff and merge well in git.
 
+### Run settings
+
+A request can carry the settings of its load test in a `load` object. It is left out of the file until a run is set up.
+
+| Field | Values |
+| ----- | ------ |
+| `load.durationMs`, `load.maxRequests`, `load.maxRequestsPerSecond` | limits of the run, 0 for none: the first one reached ends it |
+| `load.onePass` | also ends the run after one pass over the values |
+| `load.warmupMs` | first part of the run, sent but not counted |
+| `load.connections` | number of connections, 0 for the number of vCPUs |
+| `load.seed` | equal seeds give equal requests, timestamps aside. 0 picks a new one for each run |
+| `load.combine` | `independent`, `together`, `all-combinations` |
+| `load.parameters[].name` | the `{{variable}}` fed by this row or, with `queryParameter`, the key of a query parameter replaced for the run only |
+| `load.parameters[].source` | `fixed`, `list`, `integer-range`, `decimal-range`, `date-range`, `random-string`, `uuid`, `timestamp`, `data-file` |
+| `load.parameters[].order` | `in-order`, `random`, `shuffled` |
+| `load.parameters[].timestampFormat` | `seconds`, `milliseconds`, `iso8601` |
+| `load.parameters[].fileFormat` | `text`, `csv`, `json-lines` |
+
+Each source keeps its own fields (`listValues`, `integerFrom`, `dateFormat`, `filePath`...), so switching source loses
+nothing. A data file is only referenced by its path, absolute or relative to the directory of the collection.
+
 !!! warning "Secrets"
     Variable values are stored in clear in the collection file. For secrets, prefer the process environment
     (`{{$env.TOKEN}}`) or keep the file out of version control.

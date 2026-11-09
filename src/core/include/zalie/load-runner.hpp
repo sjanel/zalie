@@ -10,6 +10,8 @@
 #include <string_view>
 
 #include "zalie/latency-histogram.hpp"
+#include "zalie/load-plan.hpp"
+#include "zalie/load-settings.hpp"
 #include "zalie/raw-chars.hpp"
 #include "zalie/resolved-request.hpp"
 
@@ -17,21 +19,47 @@ namespace zalie {
 
 // Outcome of a request: the class of its status (1xx with 2xx and 6xx and above with 5xx, like the status pill of a
 // response), or 'error' when no response was received.
-enum class LoadClass : std::uint8_t { status2xx, status3xx, status4xx, status5xx, error };
-inline constexpr std::size_t kNbLoadClasses = 5;
+enum class LoadClass : std::uint8_t {
+  status2xx,
+  status3xx,
+  status4xx,
+  status5xx,
+
+  // should be last
+  error,
+};
+inline constexpr std::size_t kNbLoadClasses = static_cast<uint8_t>(LoadClass::error) + 1U;
 
 // Why a request got no response.
-enum class LoadErrorKind : std::uint8_t { connection, tls, timeout, closed, malformed, tooLarge, other };
-inline constexpr std::size_t kNbLoadErrorKinds = 7;
+// 'invalidValue' is a request that was not sent: a generated value is refused where it lands.
+enum class LoadErrorKind : std::uint8_t {
+  connection,
+  tls,
+  timeout,
+  closed,
+  malformed,
+  tooLarge,
+  other,
 
-enum class LoadPhase : std::uint8_t { starting, warmup, running, stopping, finished };
+  // should be last
+  invalidValue,
+};
+inline constexpr std::size_t kNbLoadErrorKinds = static_cast<uint8_t>(LoadErrorKind::invalidValue) + 1U;
+
+enum class LoadPhase : std::uint8_t {
+  starting,
+  warmup,
+  running,
+  stopping,
+  finished,
+};
 
 // What a run sends, and when it ends. For the limits, 0 means none: the run ends at the first limit reached.
 struct LoadOptions {
   using WakeFn = void (*)(void* pUserData);
 
   static constexpr std::size_t kDefaultMaxBodyBytes = 512UL * 1024UL * 1024UL;
-  static constexpr std::uint32_t kDefaultDurationMs = 10000;
+  static constexpr std::uint32_t kDefaultDurationMs = kDefaultLoadDurationMs;
 
   // Called from the collector thread after each new snapshot (the app wakes its event loop with it).
   WakeFn wakeFn{nullptr};
@@ -49,7 +77,15 @@ struct LoadOptions {
   std::uint32_t connections{0};
   // Upper bound of 'connections'. 0: the number of vCPUs.
   std::uint32_t maxConnections{0};
+  // Also ends the run after one pass over the values.
+  bool onePass{false};
 };
+
+// The limits of a run from its saved settings. The rest of the options keep their defaults.
+[[nodiscard]] LoadOptions MakeLoadOptions(const LoadSettings& settings) noexcept;
+
+// The number of requests a run should send, the tightest limit winning, or 0 when only its duration bounds it.
+[[nodiscard]] std::uint64_t PlannedRequests(const LoadPlan& plan, const LoadOptions& options) noexcept;
 
 // The number of connections a run with these options uses.
 [[nodiscard]] std::uint32_t LoadConnections(const LoadOptions& options) noexcept;
@@ -112,11 +148,12 @@ struct LoadSnapshot {
   amc::vector<RawChars32> warnings;
   // Set when the run could not start (invalid URL...).
   RawChars32 setupError;
+  // What the run sends: its seed, its data files... Part of the report of the run.
+  std::shared_ptr<const LoadPlan> plan;
   // Times to the response head and to the end of the body of the received responses. A failed connection is not a
-  // response time: it only appears in classHistograms and byClass, under 'error'.
+  // response time: it only appears in byClass, under 'error'.
   LatencyHistogram headHistogram;
   LatencyHistogram totalHistogram;
-  std::array<LatencyHistogram, kNbLoadClasses> classHistograms;
   LatencySummary head;
   LatencySummary total;
   std::array<LatencySummary, kNbLoadClasses> byClass;
@@ -147,13 +184,16 @@ struct LoadSnapshot {
   bool clientSaturated{false};
 };
 
-// Sends a request over and over from its own threads (the interactive executor stays available) in the closed model:
-// each connection sends its next request as soon as the previous one completed. Bodies are counted, never kept.
-// The workers publish their statistics without locking, a collector thread merges them about 10 times per second into
-// a snapshot, which is all the UI reads: its cost does not depend on the number of connections.
+// Sends the requests of a plan over and over from its own threads (the interactive executor stays available) in the
+// closed model: each connection sends its next request as soon as the previous one completed. Bodies are counted, never
+// kept. The workers publish their statistics without locking, a collector thread merges them about 10 times per second
+// into a snapshot, which is all the UI reads: its cost does not depend on the number of connections.
 class LoadRunner {
  public:
-  // Starts the run.
+  // Starts the run. An invalid plan ends it at once, with its first issue as 'setupError'.
+  LoadRunner(std::shared_ptr<const LoadPlan> plan, const LoadOptions& options);
+
+  // Starts a run sending this request each time.
   LoadRunner(ResolvedRequest request, const LoadOptions& options);
 
   LoadRunner(const LoadRunner&) = delete;

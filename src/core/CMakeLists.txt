@@ -7,6 +7,7 @@ add_library(
   src/bruno-import.cpp
   src/collection.cpp
   src/curl-import.cpp
+  src/data-file.cpp
   src/desktop-entry.cpp
   src/exchange.cpp
   src/executor.cpp
@@ -15,6 +16,7 @@ add_library(
   src/http-client-setup.cpp
   src/json-format.cpp
   src/json-path.cpp
+  src/load-plan.cpp
   src/load-runner.cpp
   src/paths.cpp
   src/persistence.cpp
@@ -26,6 +28,7 @@ add_library(
   src/syntax.cpp
   src/text-document.cpp
   src/url.cpp
+  src/value-generators.cpp
   src/variables.cpp
   src/workspace.cpp)
 add_library(zalie::core ALIAS zalie_core)

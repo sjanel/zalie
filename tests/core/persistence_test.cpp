@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <amc/type_traits.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +18,7 @@
 #include "zalie/file-io.hpp"
 #include "zalie/history.hpp"
 #include "zalie/key-value.hpp"
+#include "zalie/load-settings.hpp"
 #include "zalie/method.hpp"
 #include "zalie/paths.hpp"
 #include "zalie/raw-chars.hpp"
@@ -60,6 +62,54 @@ TEST(Persistence, CollectionRoundTrip) {
   // Indented by 2 spaces, ends with a newline.
   EXPECT_TRUE(json.starts_with("{\n  \"name\": ")) << json.substr(0, 40);
   EXPECT_TRUE(json.ends_with("}\n"));
+}
+
+// Requests are moved with memcpy in their folders: the optional run settings must not change that.
+static_assert(amc::is_trivially_relocatable_v<Request>);
+
+TEST(Persistence, LoadSettingsAreLeftOutWhenUnused) {
+  const std::string json = SerializeCollection(MakeRichCollection());
+  EXPECT_FALSE(json.contains("\"load\""));
+}
+
+TEST(Persistence, LoadSettingsRoundTrip) {
+  Collection collection = MakeRichCollection();
+  LoadSettings settings;
+  settings.seed = 42;
+  settings.maxRequests = 1000;
+  settings.durationMs = 30000;
+  settings.maxRequestsPerSecond = 500;
+  settings.warmupMs = 2000;
+  settings.connections = 8;
+  settings.combine = CombineMode::allCombinations;
+  settings.onePass = true;
+  LoadParameter list;
+  list.name.assign(std::string_view{"term"});
+  list.source = ValueSource::list;
+  list.listValues.assign(std::string_view{"dog\ncat"});
+  list.order = ValueOrder::shuffled;
+  LoadParameter file;
+  file.name.assign(std::string_view{"user"});
+  file.source = ValueSource::dataFile;
+  file.filePath.assign(std::string_view{"users.csv"});
+  file.fileColumn.assign(std::string_view{"id"});
+  file.fileFormat = DataFileFormat::jsonLines;
+  file.queryParameter = true;
+  file.timestampFormat = TimestampFormat::iso8601;
+  settings.parameters.push_back(std::move(list));
+  settings.parameters.push_back(std::move(file));
+  collection.root.folders[0].requests[0].load = std::move(settings);
+
+  const std::string json = SerializeCollection(collection);
+  EXPECT_TRUE(json.contains("\"source\": \"data-file\""));
+  EXPECT_TRUE(json.contains("\"order\": \"shuffled\""));
+  EXPECT_TRUE(json.contains("\"combine\": \"all-combinations\""));
+  EXPECT_TRUE(json.contains("\"fileFormat\": \"json-lines\""));
+  EXPECT_TRUE(json.contains("\"timestampFormat\": \"iso8601\""));
+  auto parsed = ParseCollection(json);
+  ASSERT_TRUE(parsed.has_value()) << View(parsed.error());
+  EXPECT_EQ(*parsed, collection);
+  EXPECT_EQ(SerializeCollection(*parsed), json);
 }
 
 TEST(Persistence, TruncatedInputIsNotReadPastItsEnd) {

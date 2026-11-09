@@ -1,9 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 #include "zalie/key-value.hpp"
+#include "zalie/load-settings.hpp"
 #include "zalie/method.hpp"
 #include "zalie/raw-chars.hpp"
 
@@ -62,12 +64,15 @@ struct Request {
   // Fields of a BodyMode::formUrlEncoded body.
   KeyValues form;
   Auth auth;
+  // The run settings of its performance tab. Absent until a run is set up: it is then left out of the collection file.
+  std::optional<LoadSettings> load;
   std::uint64_t id{0};
   RequestSettings settings;
   Method method{Method::get};
   BodyMode bodyMode{BodyMode::none};
 
-  using trivially_relocatable = AllTriviallyRelocatable<RawChars32, KeyValues, Auth>;
+  // std::optional stores its value inline, without pointing to itself: it relocates like its value.
+  using trivially_relocatable = AllTriviallyRelocatable<RawChars32, KeyValues, Auth, LoadSettings>;
 };
 
 // Default Content-Type of a body mode (empty for BodyMode::none).

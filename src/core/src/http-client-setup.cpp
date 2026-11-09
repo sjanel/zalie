@@ -4,12 +4,16 @@
 #include <aeronet/client-connection.hpp>
 #include <aeronet/client-protocol.hpp>
 #include <aeronet/http-method.hpp>
+#include <aeronet/lower-ascii-key.hpp>
+#include <aeronet/reserved-headers.hpp>
 #include <algorithm>
 #include <cstddef>
 #include <string_view>
 
 #include "zalie/method.hpp"
+#include "zalie/raw-chars.hpp"
 #include "zalie/request.hpp"
+#include "zalie/string-utils.hpp"
 
 namespace zalie {
 
@@ -49,6 +53,25 @@ ClientKey KeyOf(const RequestSettings& settings) noexcept {
           .followRedirects = settings.followRedirects,
           .verifyTls = settings.verifyTls,
           .decompress = settings.decompress};
+}
+
+HeaderUse ClassifyHeader(std::string_view name, std::string_view value, RawChars32& lowerName) {
+  if (EqualsIgnoreCase(name, "content-type")) {
+    return HeaderUse::contentType;
+  }
+  if (!IsHttpToken(name) || value.find_first_of("\r\n", 0) != std::string_view::npos || value.contains('\0')) {
+    return HeaderUse::invalid;
+  }
+  lowerName.clear();
+  lowerName.ensureAvailableCapacity(name.size());
+  for (char ch : name) {
+    lowerName.unchecked_push_back(ToLowerAscii(ch));
+  }
+  if (aeronet::http::IsReservedOrForbiddenRequestHeader(aeronet::LowerAsciiKey{std::string_view(lowerName)}) ||
+      EqualsIgnoreCase(name, "connection")) {
+    return HeaderUse::managedByClient;
+  }
+  return HeaderUse::send;
 }
 
 aeronet::HttpClientConfig MakeConfig(const ClientKey& key, std::size_t maxBodyBytes) {

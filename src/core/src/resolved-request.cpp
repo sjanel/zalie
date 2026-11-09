@@ -189,18 +189,23 @@ VariableScope MakeScope(const Collection& collection, int environmentIndex) {
 }
 
 ResolvedRequest ResolveRequest(const Request& request, const Collection& collection, const VariableScope& scope) {
+  return ResolveRequest(request, request.url, collection, scope);
+}
+
+ResolvedRequest ResolveRequest(const Request& request, std::string_view url, const Collection& collection,
+                               const VariableScope& scope) {
   ResolvedRequest out(EstimateStringsSize(request, collection));
   out.method = request.method;
   out.settings = request.settings;
   Resolver resolver(scope, out);
 
-  RawChars32& url = resolver.scratch();
-  url.clear();
-  resolver.resolveInto(Trim(request.url), url);
-  if (!url.empty() && !HasScheme(url)) {
-    out.url = out.strings.concat({"http://", url});
+  RawChars32& resolvedUrl = resolver.scratch();
+  resolvedUrl.clear();
+  resolver.resolveInto(Trim(url), resolvedUrl);
+  if (!resolvedUrl.empty() && !HasScheme(resolvedUrl)) {
+    out.url = out.strings.concat({"http://", resolvedUrl});
   } else {
-    out.url = out.strings.store(url);
+    out.url = out.strings.store(resolvedUrl);
   }
 
   AddHeaders(collection.headers, resolver, out);

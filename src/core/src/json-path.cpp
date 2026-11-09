@@ -10,6 +10,7 @@
 #include <system_error>
 #include <utility>
 
+#include "json-scan.hpp"
 #include "zalie/json-format.hpp"
 #include "zalie/raw-chars.hpp"
 
@@ -19,7 +20,6 @@ namespace {
 
 constexpr std::size_t kNpos = std::string_view::npos;
 
-constexpr bool IsJsonSpace(char ch) noexcept { return ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t'; }
 constexpr bool IsDigit(char ch) noexcept { return ch >= '0' && ch <= '9'; }
 // Characters of a shorthand member name ('.name'): RFC 9535 allows letters, digits, '_' and non-ASCII; '-' and '$' are
 // accepted too, as most JSONPath implementations do ('.content-type').
@@ -28,209 +28,18 @@ constexpr bool IsNameFirst(char ch) noexcept {
 }
 constexpr bool IsNameChar(char ch) noexcept { return IsNameFirst(ch) || IsDigit(ch) || ch == '-' || ch == '$'; }
 
-int HexValue(char ch) noexcept {
-  if (IsDigit(ch)) {
-    return ch - '0';
-  }
-  if (ch >= 'a' && ch <= 'f') {
-    return ch - 'a' + 10;
-  }
-  if (ch >= 'A' && ch <= 'F') {
-    return ch - 'A' + 10;
-  }
-  return -1;
-}
-
-// Reads 4 hex digits at 'pos'; -1 if invalid.
-std::int32_t ReadHex4(std::string_view text, std::size_t pos) noexcept {
-  if (pos + 4 > text.size()) {
-    return -1;
-  }
-  std::int32_t value = 0;
-  for (std::size_t i = 0; i < 4; ++i) {
-    const int digit = HexValue(text[pos + i]);
-    if (digit < 0) {
-      return -1;
-    }
-    value = (value * 16) + digit;
-  }
-  return value;
-}
-
-void AppendUtf8(RawChars32& out, std::uint32_t codePoint) {
-  if (codePoint < 0x80U) {
-    out.push_back(static_cast<char>(codePoint));
-  } else if (codePoint < 0x800U) {
-    out.push_back(static_cast<char>(0xC0U | (codePoint >> 6U)));
-    out.push_back(static_cast<char>(0x80U | (codePoint & 0x3FU)));
-  } else if (codePoint < 0x10000U) {
-    out.push_back(static_cast<char>(0xE0U | (codePoint >> 12U)));
-    out.push_back(static_cast<char>(0x80U | ((codePoint >> 6U) & 0x3FU)));
-    out.push_back(static_cast<char>(0x80U | (codePoint & 0x3FU)));
-  } else {
-    out.push_back(static_cast<char>(0xF0U | (codePoint >> 18U)));
-    out.push_back(static_cast<char>(0x80U | ((codePoint >> 12U) & 0x3FU)));
-    out.push_back(static_cast<char>(0x80U | ((codePoint >> 6U) & 0x3FU)));
-    out.push_back(static_cast<char>(0x80U | (codePoint & 0x3FU)));
-  }
-}
-
-// Decodes the escapes of a string body (between the quotes): the common JSON escapes, \uXXXX (surrogate pairs
-// included) and \' (JSONPath single-quoted names). Returns false on an invalid escape.
+// Decodes the escapes of a string body (between the quotes) into 'out'. Returns false on an invalid escape.
 bool Unescape(std::string_view raw, RawChars32& out) {
   out.clear();
-  out.reserve(static_cast<std::uint32_t>(raw.size()));
-  for (std::size_t pos = 0; pos < raw.size(); ++pos) {
-    const char ch = raw[pos];
-    if (ch != '\\') {
-      out.push_back(ch);
-      continue;
-    }
-    if (++pos == raw.size()) {
-      return false;
-    }
-    switch (raw[pos]) {
-      case '"':
-        out.push_back('"');
-        break;
-      case '\'':
-        out.push_back('\'');
-        break;
-      case '\\':
-        out.push_back('\\');
-        break;
-      case '/':
-        out.push_back('/');
-        break;
-      case 'b':
-        out.push_back('\b');
-        break;
-      case 'f':
-        out.push_back('\f');
-        break;
-      case 'n':
-        out.push_back('\n');
-        break;
-      case 'r':
-        out.push_back('\r');
-        break;
-      case 't':
-        out.push_back('\t');
-        break;
-      case 'u': {
-        std::int32_t unit = ReadHex4(raw, pos + 1);
-        if (unit < 0) {
-          return false;
-        }
-        pos += 4;
-        auto codePoint = static_cast<std::uint32_t>(unit);
-        if (codePoint >= 0xD800U && codePoint <= 0xDBFFU) {
-          // High surrogate: a low one must follow.
-          if (pos + 2 >= raw.size() || raw[pos + 1] != '\\' || raw[pos + 2] != 'u') {
-            return false;
-          }
-          unit = ReadHex4(raw, pos + 3);
-          if (unit < 0xDC00 || unit > 0xDFFF) {
-            return false;
-          }
-          pos += 6;
-          codePoint = 0x10000U + ((codePoint - 0xD800U) << 10U) + (static_cast<std::uint32_t>(unit) - 0xDC00U);
-        } else if (codePoint >= 0xDC00U && codePoint <= 0xDFFFU) {
-          return false;
-        }
-        AppendUtf8(out, codePoint);
-        break;
-      }
-      default:
-        return false;
-    }
-  }
-  return true;
-}
-
-// --- Scanning of a (validated) JSON document ---
-
-std::size_t SkipSpaces(std::string_view json, std::size_t pos) noexcept {
-  while (pos < json.size() && IsJsonSpace(json[pos])) {
-    ++pos;
-  }
-  return pos;
-}
-
-// 'pos' on the opening quote: position after the closing quote.
-std::size_t StringEnd(std::string_view json, std::size_t pos) noexcept {
-  for (++pos; pos < json.size(); ++pos) {
-    if (json[pos] == '\\') {
-      ++pos;
-    } else if (json[pos] == '"') {
-      return pos + 1;
-    }
-  }
-  return kNpos;
-}
-
-// 'pos' on the first character of a value: position after its last character.
-std::size_t ValueEnd(std::string_view json, std::size_t pos) noexcept {
-  if (pos >= json.size()) {
-    return kNpos;
-  }
-  const char first = json[pos];
-  if (first == '"') {
-    return StringEnd(json, pos);
-  }
-  if (first == '{' || first == '[') {
-    std::size_t depth = 0;
-    while (pos < json.size()) {
-      const char ch = json[pos];
-      if (ch == '"') {
-        pos = StringEnd(json, pos);
-        if (pos == kNpos) {
-          return kNpos;
-        }
-        continue;
-      }
-      if (ch == '{' || ch == '[') {
-        ++depth;
-      } else if ((ch == '}' || ch == ']') && --depth == 0) {
-        return pos + 1;
-      }
-      ++pos;
-    }
-    return kNpos;
-  }
-  const std::size_t begin = pos;
-  while (pos < json.size() && !IsJsonSpace(json[pos]) && json[pos] != ',' && json[pos] != '}' && json[pos] != ']') {
-    ++pos;
-  }
-  return pos == begin ? kNpos : pos;
+  return AppendUnescaped(raw, out);
 }
 
 // Calls 'func(rawKey, value)' for the members of 'object' (a view starting with '{'), in order, until it returns false.
-// 'rawKey' is the key without its quotes, escapes untouched.
+// 'rawKey' is the key without its quotes, escapes untouched. Stops silently at the first malformed member.
 template <class Func>
 void ForEachMember(std::string_view object, Func&& func) {
-  std::size_t pos = SkipSpaces(object, 1);
-  while (pos < object.size() && object[pos] == '"') {
-    const std::size_t keyEnd = StringEnd(object, pos);
-    if (keyEnd == kNpos) {
-      return;
-    }
-    const std::string_view rawKey = object.substr(pos + 1, keyEnd - pos - 2);
-    pos = SkipSpaces(object, keyEnd);
-    if (pos >= object.size() || object[pos] != ':') {
-      return;
-    }
-    pos = SkipSpaces(object, pos + 1);
-    const std::size_t valueEnd = ValueEnd(object, pos);
-    if (valueEnd == kNpos || !func(rawKey, object.substr(pos, valueEnd - pos))) {
-      return;
-    }
-    pos = SkipSpaces(object, valueEnd);
-    if (pos >= object.size() || object[pos] != ',') {
-      return;
-    }
-    pos = SkipSpaces(object, pos + 1);
-  }
+  static_cast<void>(
+      ScanJsonObject(object, [&func](std::string_view rawKey, std::string_view value) { return func(rawKey, value); }));
 }
 
 // Calls 'func(value)' for the elements of 'array' (a view starting with '['), in order, until it returns false.
