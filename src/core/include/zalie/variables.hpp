@@ -2,6 +2,7 @@
 
 #include <amc/vector.hpp>
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 
 #include "zalie/key-value.hpp"
@@ -21,6 +22,11 @@ class VariableScope {
 
   // Adds one variable.
   void add(std::string_view name, std::string_view value) { _entries.push_back({name, value}); }
+
+  // Adds every entry of 'other', after the ones of this scope.
+  void addScope(const VariableScope& other) {
+    _entries.insert(_entries.end(), other._entries.begin(), other._entries.end());
+  }
 
   // Returns the value of the variable, or nullptr if it is not defined.
   [[nodiscard]] const std::string_view* find(std::string_view name) const noexcept;
@@ -52,6 +58,10 @@ void FindVariableRefs(std::string_view text, VariableRefs& out);
 // Whether the name is a built-in dynamic variable ($timestamp, $randomUUID, $env.NAME, process.env.NAME...).
 [[nodiscard]] bool IsDynamicVariable(std::string_view name) noexcept;
 
+// Appends the value of the dynamic variable 'name' to 'out'. Returns false if it is not a dynamic variable (or an
+// undefined environment variable).
+bool AppendDynamicVariable(std::string_view name, RawChars32& out);
+
 // Replaces every {{name}} of 'text' by its value and appends the result to 'out'.
 // Values are themselves interpolated (up to a small depth, which also stops reference cycles).
 // Built-in dynamic variables are supported:
@@ -67,5 +77,8 @@ void Interpolate(std::string_view text, const VariableScope& scope, RawChars32& 
 
 // Generates a random (version 4) UUID, lower-case, with dashes.
 [[nodiscard]] RawChars32 RandomUuid();
+
+// Appends the (version 4) UUID made of these 128 bits, lower-case, with dashes.
+void AppendUuid(std::uint64_t high, std::uint64_t low, RawChars32& out);
 
 }  // namespace zalie

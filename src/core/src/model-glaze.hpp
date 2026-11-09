@@ -10,6 +10,7 @@
 #include <string_view>
 
 #include "zalie/exchange.hpp"
+#include "zalie/load-settings.hpp"
 #include "zalie/method.hpp"
 #include "zalie/raw-chars.hpp"
 #include "zalie/request.hpp"
@@ -68,6 +69,48 @@ struct meta<zalie::HttpVersion> {
   using enum zalie::HttpVersion;
   static constexpr std::array keys{std::string_view{"auto"}, std::string_view{"http1.1"}, std::string_view{"http2"}};
   static constexpr std::array value{automatic, http1, http2};
+};
+
+template <>
+struct meta<zalie::ValueSource> {
+  using enum zalie::ValueSource;
+  static constexpr std::array keys{
+      std::string_view{"fixed"},         std::string_view{"list"},       std::string_view{"integer-range"},
+      std::string_view{"decimal-range"}, std::string_view{"date-range"}, std::string_view{"random-string"},
+      std::string_view{"uuid"},          std::string_view{"timestamp"},  std::string_view{"data-file"}};
+  static constexpr std::array value{fixed,        list, integerRange, decimalRange, dateRange,
+                                    randomString, uuid, timestamp,    dataFile};
+};
+
+template <>
+struct meta<zalie::ValueOrder> {
+  using enum zalie::ValueOrder;
+  static constexpr std::array keys{std::string_view{"in-order"}, std::string_view{"random"},
+                                   std::string_view{"shuffled"}};
+  static constexpr std::array value{inOrder, random, shuffled};
+};
+
+template <>
+struct meta<zalie::CombineMode> {
+  using enum zalie::CombineMode;
+  static constexpr std::array keys{std::string_view{"independent"}, std::string_view{"together"},
+                                   std::string_view{"all-combinations"}};
+  static constexpr std::array value{independent, together, allCombinations};
+};
+
+template <>
+struct meta<zalie::TimestampFormat> {
+  using enum zalie::TimestampFormat;
+  static constexpr std::array keys{std::string_view{"seconds"}, std::string_view{"milliseconds"},
+                                   std::string_view{"iso8601"}};
+  static constexpr std::array value{seconds, milliseconds, iso8601};
+};
+
+template <>
+struct meta<zalie::DataFileFormat> {
+  using enum zalie::DataFileFormat;
+  static constexpr std::array keys{std::string_view{"text"}, std::string_view{"csv"}, std::string_view{"json-lines"}};
+  static constexpr std::array value{text, csv, jsonLines};
 };
 
 template <>

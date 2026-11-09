@@ -15,11 +15,13 @@ foreach(
   test
   collection
   curl-import
+  data-file
   desktop-entry
   bruno-import
   json-format
   json-path
   latency-histogram
+  load-plan
   persistence
   postman-import
   resolved-request
@@ -28,6 +30,7 @@ foreach(
   syntax
   text-document
   url
+  value-generators
   variables)
   zalie_add_test(core ${test} zalie::core)
 endforeach()

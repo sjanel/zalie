@@ -16,15 +16,28 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
+#include "zalie/collection.hpp"
+#include "zalie/data-file.hpp"
+#include "zalie/file-io.hpp"
+#include "zalie/key-value.hpp"
+#include "zalie/load-plan.hpp"
+#include "zalie/load-settings.hpp"
 #include "zalie/method.hpp"
+#include "zalie/raw-chars.hpp"
+#include "zalie/request.hpp"
 #include "zalie/resolved-request.hpp"
+#include "zalie/variables.hpp"
 
 namespace zalie {
 namespace {
@@ -60,6 +73,17 @@ class LoadRunnerTest : public ::testing::Test {
         _capturedContentType = std::string(req.headerValueOrEmpty("content-type"));
       }
       _hits.fetch_add(1, std::memory_order_relaxed);
+      return req.makeResponse(200, kBody, "text/plain");
+    });
+    router.setPath(aeronet::http::Method::GET, "/seen", [this](const aeronet::HttpRequestView& req) {
+      {
+        std::scoped_lock lock(_capturedMutex);
+        std::string entry;
+        for (const auto& [key, value] : req.queryParamsRange()) {  // in the order of the URL
+          entry += std::string(key) + "=" + std::string(value) + ";";
+        }
+        _seen.push_back(std::move(entry));
+      }
       return req.makeResponse(200, kBody, "text/plain");
     });
     router.setPath(aeronet::http::Method::GET, "/slow", [](const aeronet::HttpRequestView& req) {
@@ -106,6 +130,7 @@ class LoadRunnerTest : public ::testing::Test {
   std::string _capturedBody;
   std::string _capturedHeader;
   std::string _capturedContentType;
+  std::vector<std::string> _seen;
   std::uint16_t _port{0};
 };
 
@@ -337,6 +362,153 @@ TEST_F(LoadRunnerTest, SnapshotsAreImmutableAndIndependentOfTheRunner) {
     snapshot = runner.snapshot();
   }
   EXPECT_EQ(snapshot->requests(), 10U);
+}
+
+LoadParameter ListParameter(std::string_view name, std::string_view values) {
+  LoadParameter parameter;
+  parameter.name.assign(name);
+  parameter.source = ValueSource::list;
+  parameter.listValues.assign(values);
+  return parameter;
+}
+
+class LoadRunnerPlanTest : public LoadRunnerTest {
+ protected:
+  [[nodiscard]] std::shared_ptr<const LoadPlan> compile(std::string_view path) {
+    _request.url.assign(std::string_view(url(path)));
+    const VariableScope scope = MakeScope(_collection, -1);
+    return std::make_shared<const LoadPlan>(_request, _collection, scope, _settings,
+                                            std::filesystem::temp_directory_path(), _cache);
+  }
+
+  Collection _collection;
+  Request _request;
+  LoadSettings _settings;
+  DataFileIndexCache _cache;
+};
+
+TEST_F(LoadRunnerPlanTest, EachValueIsSentOncePerPassWhateverTheConnections) {
+  _settings.parameters.push_back(ListParameter("term", "a b\nc&d\ne=f\ng/h\ni+j\nk\nl\nm"));
+  const auto plan = compile("/seen?q={{term}}");
+  ASSERT_TRUE(plan->valid());
+  const auto snapshot = [&] {
+    LoadRunner runner(plan, {.durationMs = 0, .connections = 4, .maxConnections = 4, .onePass = true});
+    EXPECT_TRUE(runner.waitForCompletion(30s));
+    return runner.snapshot();
+  }();
+  EXPECT_EQ(snapshot->counts[kClass2xx], 8U);
+  EXPECT_EQ(snapshot->plan, plan);
+  std::scoped_lock lock(_capturedMutex);
+  EXPECT_EQ(std::set<std::string>(_seen.begin(), _seen.end()),
+            (std::set<std::string>{"q=a b;", "q=c&d;", "q=e=f;", "q=g/h;", "q=i+j;", "q=k;", "q=l;", "q=m;"}));
+  EXPECT_EQ(_seen.size(), 8U);
+}
+
+TEST_F(LoadRunnerPlanTest, AnInvalidPlanEndsTheRunAtOnce) {
+  _settings.parameters.push_back(ListParameter("term", ""));
+  const auto plan = compile("/seen?q={{term}}");
+  ASSERT_FALSE(plan->valid());
+  LoadRunner runner(plan, {.durationMs = 25000});
+  ASSERT_TRUE(runner.waitForCompletion(10s));
+  const auto snapshot = runner.snapshot();
+  EXPECT_EQ(snapshot->phase, LoadPhase::finished);
+  EXPECT_EQ(std::string_view(snapshot->setupError), "The list is empty");
+  EXPECT_EQ(snapshot->requests(), 0U);
+  EXPECT_EQ(hits(), 0U);
+}
+
+TEST_F(LoadRunnerPlanTest, ARefusedValueIsCountedAndNotSent) {
+  LoadParameter parameter;
+  parameter.name.assign(std::string_view{"term"});
+  parameter.source = ValueSource::randomString;
+  parameter.randomLength = 1;
+  parameter.randomCharacters.assign(std::string_view{"\n"});
+  _settings.parameters.push_back(std::move(parameter));
+  _request.headers.push_back(MakeKeyValue("X-Term", "{{term}}"));
+  const auto plan = compile("/ok");
+  ASSERT_TRUE(plan->valid());
+  LoadRunner runner(plan, RequestsOnly(25, 2));
+  ASSERT_TRUE(runner.waitForCompletion(30s));
+  const auto snapshot = runner.snapshot();
+  EXPECT_EQ(snapshot->counts[kClassError], 25U);
+  const LoadErrorStats& errors = snapshot->errors[static_cast<std::size_t>(LoadErrorKind::invalidValue)];
+  EXPECT_EQ(errors.count, 25U);
+  EXPECT_TRUE(errors.firstMessage.contains("line break"));
+  EXPECT_EQ(hits(), 0U);
+}
+
+TEST_F(LoadRunnerPlanTest, BodiesAndHeadersVaryForEachRequest) {
+  _request.method = Method::post;
+  _request.bodyMode = BodyMode::json;
+  _request.body.assign(std::string_view{R"({"q":"{{term}}"})"});
+  _request.headers.push_back(MakeKeyValue("X-Custom", "h-{{term}}"));
+  _settings.parameters.push_back(ListParameter("term", "first\nsay \"x\""));
+  const auto plan = compile("/capture");
+  LoadRunner runner(plan, RequestsOnly(2, 1));
+  ASSERT_TRUE(runner.waitForCompletion(30s));
+  EXPECT_EQ(runner.snapshot()->counts[kClass2xx], 2U);
+  std::scoped_lock lock(_capturedMutex);
+  EXPECT_EQ(_capturedBody, R"({"q":"say \"x\""})");
+  EXPECT_EQ(_capturedHeader, "h-say \"x\"");
+  EXPECT_EQ(_capturedContentType, "application/json");
+}
+
+TEST_F(LoadRunnerPlanTest, AnInvalidGeneratedUrlIsCountedAndNotSent) {
+  _request.url.assign(std::string_view{"{{target}}"});
+  _settings.parameters.push_back(ListParameter("target", "ftp://nope"));
+  const VariableScope scope = MakeScope(_collection, -1);
+  const auto plan = std::make_shared<const LoadPlan>(_request, _collection, scope, _settings,
+                                                     std::filesystem::temp_directory_path(), _cache);
+  ASSERT_TRUE(plan->valid());
+  LoadRunner runner(plan, RequestsOnly(3, 1));
+  ASSERT_TRUE(runner.waitForCompletion(30s));
+  EXPECT_EQ(runner.snapshot()->errors[static_cast<std::size_t>(LoadErrorKind::invalidValue)].count, 3U);
+}
+
+TEST_F(LoadRunnerPlanTest, ReadsItsValuesFromADataFile) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "zalie-runner-users.csv";
+  std::ofstream(path, std::ios::binary) << "user,token\nann,t1\nbob,t2\ncid,t3\n";
+  for (const std::string_view column : {"user", "token"}) {
+    LoadParameter parameter;
+    parameter.name.assign(column);
+    parameter.source = ValueSource::dataFile;
+    parameter.filePath.assign(std::string_view(PathToUtf8(path)));
+    parameter.fileColumn.assign(column);
+    parameter.order = ValueOrder::shuffled;
+    _settings.parameters.push_back(std::move(parameter));
+  }
+  const auto plan = compile("/seen?u={{user}}&t={{token}}");
+  ASSERT_TRUE(plan->valid());
+  {
+    LoadRunner runner(plan, {.durationMs = 0, .connections = 2, .maxConnections = 2, .onePass = true});
+    ASSERT_TRUE(runner.waitForCompletion(30s));
+    EXPECT_EQ(runner.snapshot()->counts[kClass2xx], 3U);
+  }  // joins the threads: Windows cannot delete a file they still have open
+  std::filesystem::remove(path);
+  std::scoped_lock lock(_capturedMutex);
+  EXPECT_EQ(std::set<std::string>(_seen.begin(), _seen.end()),
+            (std::set<std::string>{"u=ann;t=t1;", "u=bob;t=t2;", "u=cid;t=t3;"}));
+}
+
+TEST_F(LoadRunnerPlanTest, ADataFileChangedBeforeTheRunIsASetupError) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "zalie-runner-changed.txt";
+  std::ofstream(path, std::ios::binary) << "alpha\nbeta\n";
+  LoadParameter parameter;
+  parameter.name.assign(std::string_view{"word"});
+  parameter.source = ValueSource::dataFile;
+  parameter.filePath.assign(std::string_view(PathToUtf8(path)));
+  parameter.fileFormat = DataFileFormat::text;
+  _settings.parameters.push_back(std::move(parameter));
+  const auto plan = compile("/seen?w={{word}}");
+  ASSERT_TRUE(plan->valid());
+  std::ofstream(path, std::ios::binary | std::ios::trunc) << "x\n";
+  {
+    LoadRunner runner(plan, RequestsOnly(5, 2));
+    ASSERT_TRUE(runner.waitForCompletion(30s));
+    EXPECT_TRUE(std::string_view(runner.snapshot()->setupError).contains("changed"));
+  }  // joins the threads: Windows cannot delete a file they still have open
+  EXPECT_EQ(hits(), 0U);
+  std::filesystem::remove(path);
 }
 
 TEST_F(LoadRunnerTest, WakesTheEventLoopAtEachSnapshot) {

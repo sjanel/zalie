@@ -17,7 +17,8 @@ class LatencyHistogram {
  public:
   static constexpr int kSubBits = 4;
   static constexpr int kSub = 1 << kSubBits;
-  static constexpr int kGroups = 60;
+  // Up to 2^47 ns, about 39 hours: a longer duration falls in the last bucket, and maxNs() stays exact.
+  static constexpr int kGroups = 44;
   static constexpr int kNbBuckets = kGroups * kSub;
 
   // Lower bound of a bucket.

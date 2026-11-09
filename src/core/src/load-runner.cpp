@@ -15,12 +15,15 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <thread>
 #include <utility>
 
 #include "http-client-setup.hpp"
 #include "zalie/latency-histogram.hpp"
+#include "zalie/load-plan.hpp"
+#include "zalie/load-settings.hpp"
 #include "zalie/raw-chars.hpp"
 #include "zalie/resolved-request.hpp"
 
@@ -60,6 +63,8 @@ constexpr std::uint32_t kNoLastSecond = std::numeric_limits<std::uint32_t>::max(
 constexpr double kSaturatedClientLoad = 0.9;
 
 constexpr std::string_view kUnexpectedExceptionMessage = "unexpected exception while sending the request";
+constexpr std::string_view kRefusedUrl = "the generated URL is not valid";
+constexpr std::string_view kDefaultContentType = "text/plain";
 
 [[nodiscard]] std::uint32_t NbVCpus() noexcept { return std::max(std::thread::hardware_concurrency(), 1U); }
 
@@ -186,10 +191,11 @@ struct SendResult {
   bool stopped{false};
 };
 
-[[nodiscard]] SendResult Send(aeronet::HttpClient& client, const aeronet::HttpRequest& request, CountingSink& sink) {
+template <class HttpRequestType>
+[[nodiscard]] SendResult Send(aeronet::HttpClient& client, HttpRequestType&& request, CountingSink& sink) {
   SendResult ret;
   try {
-    const aeronet::HttpClientResult result = client.request(request, sink);
+    const aeronet::HttpClientResult result = client.request(std::forward<HttpRequestType>(request), sink);
     if (result) {
       ret.status = sink.headSeen() ? sink.status() : static_cast<int>(result->status());
     } else if (result.error() == aeronet::HttpClientErrc::aborted) {
@@ -202,6 +208,32 @@ struct SendResult {
     ret.errorMessage = kUnexpectedExceptionMessage;
   }
   return ret;
+}
+
+// An aeronet request from a plan. 'body' must stay valid until the request is sent.
+template <class HeaderValue>
+[[nodiscard]] aeronet::HttpRequest BuildRequest(aeronet::HttpClient& client, const LoadPlan& plan, std::string_view url,
+                                                HeaderValue headerValue, std::size_t headerValuesBytes,
+                                                std::string_view body) {
+  aeronet::HttpRequest request =
+      client.makeRequest(plan.headerLinesBytes() + headerValuesBytes, ToAeronet(plan.method()), url);
+  std::string_view contentType;
+  const std::span<const LoadHeader> headers = plan.headers();
+  for (std::uint32_t idx = 0; idx < headers.size(); ++idx) {
+    const LoadHeader& header = headers[idx];
+    const std::string_view value = headerValue(idx);
+    if (header.isContentType) {
+      contentType = value;
+    } else if (header.replaces) {
+      request.header(aeronet::LowerAsciiKey{header.lowerName}, value);
+    } else {
+      request.headerAddLine(aeronet::LowerAsciiKey{header.lowerName}, value);
+    }
+  }
+  if (!body.empty()) {
+    request.bodyStatic(body, contentType.empty() ? kDefaultContentType : contentType);  // no copy of the body
+  }
+  return request;
 }
 
 // The statistics a worker accumulates between two publications.
@@ -263,6 +295,36 @@ struct OpenSecond {
 
 }  // namespace
 
+namespace {
+
+// Number of requests of a run, the tightest of its request limit and of one pass over the values. 0: no limit.
+[[nodiscard]] std::uint64_t MaxRequestsOf(const LoadPlan& plan, const LoadOptions& options) noexcept {
+  if (!options.onePass || plan.passLength() == 0) {
+    return options.maxRequests;
+  }
+  return options.maxRequests == 0 ? plan.passLength() : std::min(options.maxRequests, plan.passLength());
+}
+
+}  // namespace
+
+LoadOptions MakeLoadOptions(const LoadSettings& settings) noexcept {
+  return {.maxRequests = settings.maxRequests,
+          .durationMs = settings.durationMs,
+          .maxRequestsPerSecond = settings.maxRequestsPerSecond,
+          .warmupMs = settings.warmupMs,
+          .connections = settings.connections,
+          .onePass = settings.onePass};
+}
+
+std::uint64_t PlannedRequests(const LoadPlan& plan, const LoadOptions& options) noexcept {
+  std::uint64_t planned = MaxRequestsOf(plan, options);
+  if (options.maxRequestsPerSecond != 0 && options.durationMs != 0) {
+    const std::uint64_t atFullRate = (std::uint64_t{options.maxRequestsPerSecond} * options.durationMs) / 1000U;
+    planned = planned == 0 ? atFullRate : std::min(planned, atFullRate);
+  }
+  return planned;
+}
+
 std::uint32_t LoadConnections(const LoadOptions& options) noexcept {
   const std::uint32_t vCpus = NbVCpus();
   const std::uint32_t limit = options.maxConnections != 0 ? options.maxConnections : vCpus;
@@ -271,14 +333,21 @@ std::uint32_t LoadConnections(const LoadOptions& options) noexcept {
 
 class LoadRunner::Impl {
  public:
-  Impl(ResolvedRequest request, const LoadOptions& options)
-      : _request(std::move(request)),
+  Impl(std::shared_ptr<const LoadPlan> pPlan, const LoadOptions& options)
+      : _pPlan(std::move(pPlan)),
         _options(options),
+        _maxRequests(MaxRequestsOf(*_pPlan, options)),
         _slotIntervalNs(options.maxRequestsPerSecond != 0 ? 1'000'000'000LL / options.maxRequestsPerSecond : 0),
-        _nbConnections(LoadConnections(options)),
+        _nbConnections(_pPlan->valid() ? LoadConnections(options) : 0),
         _snapshot(std::make_shared<const LoadSnapshot>()),
         _pTotals(std::make_unique<StatsBlock>()),
         _pOpenSeconds(std::make_unique<std::array<OpenSecond, 2>>()) {
+    for (const RawChars32& warning : _pPlan->warnings()) {
+      _warnings.push_back(warning);
+    }
+    if (!_pPlan->valid()) {
+      reportSetupError(_pPlan->issues().front().message);
+    }
     _collector = std::jthread([this] { collectorMain(); });
     spawnWorkers();
   }
@@ -319,7 +388,7 @@ class LoadRunner::Impl {
       for (std::uint32_t idx = 0; idx < _nbConnections; ++idx) {
         _workers.push_back(std::make_unique<Worker>());
         Worker& worker = *_workers.back();
-        worker.thread = std::jthread([this, &worker, idx] { workerMain(worker, idx == 0); });
+        worker.thread = std::jthread([this, &worker] { workerMain(worker); });
       }
     } catch (const std::exception& ex) {
       if (!_workers.empty() && !_workers.back()->thread.joinable()) {
@@ -347,30 +416,34 @@ class LoadRunner::Impl {
 
   // ------------------------------------------- Worker threads ------------------------------------------- //
 
-  void workerMain(Worker& worker, bool reportWarnings) {
+  void workerMain(Worker& worker) {
+    const LoadPlan& plan = *_pPlan;
     std::optional<aeronet::HttpClient> client;
-    std::optional<aeronet::HttpRequest> request;
+    std::optional<aeronet::HttpRequest> constantRequest;
+    std::optional<LoadRequestFiller> filler;
+    bool ready = false;
     try {
-      client.emplace(MakeConfig(KeyOf(_request.settings), _options.maxBodyBytes));
-      request.emplace(client->makeRequest(ToAeronet(_request.method), _request.url));
-      AddHeaders(_request, *request, [this, reportWarnings](std::string_view reason, std::string_view name) {
-        if (reportWarnings) {
-          std::scoped_lock lock(_mutex);
-          _warnings.push_back(Concat({reason, name}));
+      client.emplace(MakeConfig(KeyOf(plan.settings()), _options.maxBodyBytes));
+      if (plan.isConstant()) {
+        // The body stays owned by the plan for the whole run: no copy.
+        constantRequest.emplace(BuildRequest(
+            *client, plan, plan.url().literal(),
+            [&plan](std::uint32_t idx) { return plan.headers()[idx].value.literal(); }, 0, plan.body().literal()));
+        ready = true;
+      } else {
+        filler.emplace(plan);
+        if (filler->setupError().empty()) {
+          ready = true;
+        } else {
+          reportSetupError(filler->setupError());
         }
-      });
-      if (!_request.body.empty()) {
-        const std::string_view contentType = _request.headerValue("content-type");
-        // The body stays owned by this object for the whole run: no copy.
-        request->bodyStatic(std::string_view(_request.body), contentType.empty() ? "text/plain" : contentType);
       }
     } catch (const std::exception& ex) {
-      request.reset();
       reportSetupError(ex.what());
     }
     waitForStart();
-    if (request) {
-      sendLoop(worker, *client, *request);
+    if (ready) {
+      sendLoop(worker, *client, constantRequest ? &*constantRequest : nullptr, filler ? &*filler : nullptr);
     }
     worker.exitedAt = steady_clock::now();
     if (_nbRunning.fetch_sub(1, std::memory_order_acq_rel) == 1) {
@@ -389,23 +462,52 @@ class LoadRunner::Impl {
     _condition.wait(lock, [this] { return _started; });
   }
 
-  void sendLoop(Worker& worker, aeronet::HttpClient& client, const aeronet::HttpRequest& request) {
+  // Builds request 'number'. Returns why it must not be sent, empty if it can be.
+  [[nodiscard]] std::string_view prepare(LoadRequestFiller& filler, std::uint64_t number, aeronet::HttpClient& client,
+                                         std::optional<aeronet::HttpRequest>& built) const {
+    if (!filler.fill(number)) {
+      return filler.error();
+    }
+    try {
+      built.emplace(BuildRequest(
+          client, *_pPlan, filler.url(), [&filler](std::uint32_t idx) { return filler.headerValue(idx); },
+          filler.headerValuesBytes(), filler.body()));
+    } catch (const std::exception&) {
+      return kRefusedUrl;
+    }
+    return {};
+  }
+
+  // Sends 'pConstant' each time or, without it, the requests computed by 'pFiller'.
+  void sendLoop(Worker& worker, aeronet::HttpClient& client, const aeronet::HttpRequest* pConstant,
+                LoadRequestFiller* pFiller) {
     CountingSink sink(_stop);
+    std::optional<aeronet::HttpRequest> built;
     while (!_stop.load(std::memory_order_relaxed)) {
       const std::uint64_t number = _nextRequest.fetch_add(1, std::memory_order_relaxed);
-      if (_options.maxRequests != 0 && number >= _options.maxRequests) {
+      if (_maxRequests != 0 && number >= _maxRequests) {
         return;
       }
-      if (_slotIntervalNs != 0 && !waitForSlot()) {
+      // Before the clock starts: computing the values is not a latency of the server.
+      const std::string_view refusal =
+          pFiller != nullptr ? prepare(*pFiller, number, client, built) : std::string_view{};
+      if (refusal.empty() && _slotIntervalNs != 0 && !waitForSlot()) {
         return;
       }
       const TimePoint begin = steady_clock::now();  // after the wait: a chosen pause is not a latency
       if (begin >= _deadline) {
         return;
       }
+      if (!refusal.empty()) {
+        if (begin >= _measureStart) {
+          record(worker, {.errorMessage = refusal, .errorKind = LoadErrorKind::invalidValue}, sink, begin, begin);
+        }
+        continue;
+      }
       sink.reset();
       worker.inFlight.store(true, std::memory_order_relaxed);
-      const SendResult result = Send(client, request, sink);
+      const SendResult result =
+          pFiller != nullptr ? Send(client, std::move(*built), sink) : Send(client, *pConstant, sink);
       worker.inFlight.store(false, std::memory_order_relaxed);
       const TimePoint end = steady_clock::now();
       if (!result.stopped && begin >= _measureStart) {
@@ -484,10 +586,7 @@ class LoadRunner::Impl {
       if (!_cpuBase && now >= _measureStart) {
         _cpuBase = ProcessCpuSeconds();
       }
-      TimePoint wake = now + kCollectPeriod;
-      if (now < _measureStart) {
-        wake = std::min(wake, _measureStart);
-      }
+      TimePoint wake = nextCollectTime(now);
       if (now < _deadline) {
         wake = std::min(wake, _deadline);
       }
@@ -515,6 +614,16 @@ class LoadRunner::Impl {
       publishSnapshot(makeSnapshot(phaseAt(now), measuredSeconds(now)));
     }
     finishRun();
+  }
+
+  // On a fixed grid from the start of the measures, so that late wake-ups do not add up: one falls on the end of each
+  // second, when a worker can only start the block of the next second if the collector took its previous one.
+  [[nodiscard]] TimePoint nextCollectTime(TimePoint now) const noexcept {
+    if (now < _measureStart) {
+      return std::min(now + kCollectPeriod, _measureStart);
+    }
+    const std::int64_t nbElapsedPeriods = (now - _measureStart) / kCollectPeriod;
+    return _measureStart + ((nbElapsedPeriods + 1) * kCollectPeriod);
   }
 
   // Waits for all the workers to be set up, so that the time of the run does not include their creation.
@@ -667,6 +776,7 @@ class LoadRunner::Impl {
     auto snapshot = std::make_shared<LoadSnapshot>();
     snapshot->phase = phase;
     snapshot->elapsedSeconds = elapsed;
+    snapshot->plan = _pPlan;
     snapshot->connections = static_cast<std::uint32_t>(_workers.size());
     snapshot->inFlight = _inFlight;
     snapshot->series = _series;
@@ -680,7 +790,6 @@ class LoadRunner::Impl {
     snapshot->head = Summarize(totals.headLatency);
     for (std::size_t idx = 0; idx < kNbLoadClasses; ++idx) {
       const LatencyHistogram& histogram = totals.totalLatency[idx];
-      snapshot->classHistograms[idx] = histogram;
       snapshot->byClass[idx] = Summarize(histogram);
       snapshot->counts[idx] = histogram.count();
       if (idx != kErrorClass) {
@@ -726,8 +835,9 @@ class LoadRunner::Impl {
   }
 
   // Immutable during the run.
-  ResolvedRequest _request;
+  std::shared_ptr<const LoadPlan> _pPlan;
   LoadOptions _options;
+  std::uint64_t _maxRequests;
   std::int64_t _slotIntervalNs;
   std::uint32_t _nbConnections;
 
@@ -736,9 +846,12 @@ class LoadRunner::Impl {
   TimePoint _measureStart;
   TimePoint _deadline{TimePoint::max()};
 
-  // Contended by nature: kept apart from each other and from the read-mostly fields.
+  // Written for each request by every worker: kept apart from what the workers only read. The rate cap, when there is
+  // one, takes its slot right after the request number: sharing their cache line costs one miss instead of two.
   alignas(64) std::atomic<std::uint64_t> _nextRequest{0};
-  alignas(64) std::atomic<std::int64_t> _nextSlotNs{0};
+  std::atomic<std::int64_t> _nextSlotNs{0};
+
+  // Read for each request and each chunk of body, and written only to end the run.
   alignas(64) std::atomic<bool> _stop{false};
   std::atomic<std::uint32_t> _nbRunning{0};
 
@@ -771,8 +884,11 @@ class LoadRunner::Impl {
   std::jthread _collector;
 };
 
+LoadRunner::LoadRunner(std::shared_ptr<const LoadPlan> plan, const LoadOptions& options)
+    : _impl(std::make_unique<Impl>(std::move(plan), options)) {}
+
 LoadRunner::LoadRunner(ResolvedRequest request, const LoadOptions& options)
-    : _impl(std::make_unique<Impl>(std::move(request), options)) {}
+    : LoadRunner(std::make_shared<const LoadPlan>(std::move(request)), options) {}
 
 LoadRunner::~LoadRunner() = default;
 

@@ -86,10 +86,15 @@ The existing dynamic variables (`{{$randomUUID}}`, `{{$timestamp}}`...) are eval
 "In order" is shared by all the connections: each value is sent once per pass, whatever their number. Several
 parameters combine in one of three ways:
 
-- **Independent** (default): each one advances on its own, and the stop condition ends the run.
-- **Together**: paired by position, the first values with the first values, like the columns of a file.
+- **Independent** (default): each one advances on its own, and the stop condition ends the run. One pass covers the
+  longest of them.
+- **Together**: paired by position, the first values with the first values, like the columns of a file. One pass
+  covers the shortest of them.
 - **All combinations**: the cartesian product, whose size is shown before the run (3 terms x 50 pages = 150 requests
-  for one pass).
+  for one pass), the last parameter advancing first, like nested loops.
+
+With **Together** and **All combinations** the parameters share one position, so the order of the first one applies
+to all: shuffled pairs stay paired, and shuffled combinations are each sent once per pass.
 
 Later: weights per value and a Zipf distribution (a few hot keys, as in real traffic).
 
@@ -111,11 +116,16 @@ Later: weights per value and a Zipf distribution (a few hot keys, as in real tra
 
 **Encoding and reproducibility.**
 
-- Values are arbitrary text, so each is encoded for where it lands: percent-encoded in the URL, form-encoded in form
-  fields, escaped inside a JSON string. A line break in a header value counts as an error instead of being sent.
-  (The `{{variables}}` of a normal Fetch are inserted in the URL as they are.)
+- Generated values are arbitrary text, so each is encoded for where it lands: percent-encoded in the path and the query
+  of the URL, form-encoded in form fields, escaped inside a JSON string. Before the path they are written as they are,
+  so that a list can hold hosts or whole URLs. A line break in a header value or before the path counts as an error
+  instead of being sent, and a generated value cannot be the name of a header.
+- A fixed value is not generated: like the `{{variables}}` of a normal Fetch it is inserted as it is, so a row left
+  untouched sends what Fetch sends (a base URL with a path keeps working).
 - A seed per run makes it reproducible; it is part of the report. The values of a request depend only on the seed and
   its number (timestamps aside), not on the timing of the threads.
+- A file changed between its index and the run stops the run before it starts; one truncated during the run makes the
+  missing rows errors, not a crash.
 - A kept sample records its request number, which gives back its values: a slow or failed response tells which
   parameters caused it, at no cost for the other requests.
 - Cost per request: the request is compiled once into a template (literal parts and variable slots), filled on the
