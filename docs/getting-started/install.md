@@ -1,9 +1,34 @@
 # Install
 
-Zalie is built from source with CMake. Every dependency is fetched and pinned automatically (aeronet, Dear ImGui,
-GLFW, glaze, amc, stb, GoogleTest), except OpenSSL (https support) and the windowing headers of your system.
+Download a package of the [latest release](https://github.com/sjanel/zalie/releases), or build Zalie from source.
 
-## Requirements
+## Download
+
+| Platform | Package | Runs on |
+| -------- | ------- | ------- |
+| Debian / Ubuntu, x86_64 | `zalie_<version>_amd64.deb` | Ubuntu 24.04+, Debian 13+ |
+| Windows, x64 | `zalie-<version>-windows-x64.zip` | Windows 10+ |
+| macOS, Apple Silicon | `zalie-<version>-macos-arm64.dmg` | macOS 26+ |
+
+Each package comes with its SHA-256 (`.sha256`). To try what is coming next, the
+[`dev` pre-release](https://github.com/sjanel/zalie/releases/tag/dev) holds the packages of the latest commit of
+`main`, versioned `X.Y.Z-dev` (the next release) and replaced at each change. Installed over a development build, the
+`.deb` of the release `X.Y.Z` is an upgrade.
+
+- **Debian / Ubuntu**: `sudo apt install ./zalie_0.1.0_amd64.deb` installs Zalie with its dependencies (OpenSSL 3, the
+  X11 libraries), its desktop entry and its icons; `sudo apt remove zalie` removes it.
+- **Windows**: unzip anywhere and run `zalie.exe`: the OpenSSL and Visual C++ runtime DLLs are next to it. The
+  executable is not signed: on the first launch, SmartScreen asks to confirm (*More info*, then *Run anyway*).
+- **macOS**: open the disk image and drag Zalie to *Applications*. The application is not notarized by Apple: on the
+  first launch macOS refuses to open it; allow it in *System Settings > Privacy & Security* (*Open Anyway*), or
+  remove the quarantine flag: `xattr -dr com.apple.quarantine /Applications/zalie.app`.
+
+## Build from source
+
+Zalie is built with CMake. Every dependency is fetched and pinned automatically (aeronet, Dear ImGui, GLFW, glaze,
+amc, stb, GoogleTest), except OpenSSL (https support) and the windowing headers of your system.
+
+### Requirements
 
 | | Linux | macOS | Windows |
 | - | ----- | ----- | ------- |
@@ -30,7 +55,7 @@ libXcursor-devel libXi-devel libXext-devel`.
     extension libraries at run time too: only their *headers* are needed to build. The executable itself only links
     the C++ runtime and OpenSSL.
 
-## Build
+### Build
 
 ```bash
 git clone https://github.com/sjanel/zalie.git
@@ -67,7 +92,7 @@ cmake -S . -B build -G Ninja -D CMAKE_BUILD_TYPE=Release -D CMAKE_CXX_COMPILER=g
   -D CMAKE_C_COMPILER="$(xcrun --find clang)" -D CMAKE_OBJC_COMPILER="$(xcrun --find clang)"
 ```
 
-## Install
+### Install
 
 ```bash
 sudo cmake --install build                # /usr/local/bin/zalie + desktop entry and icons on Linux
@@ -75,7 +100,29 @@ cmake --install build --prefix ~/.local   # for your user only, no root
 ```
 
 On Linux, the install also adds the desktop entry (`share/applications/zalie.desktop`) and the icons
-(`share/icons/hicolor`).
+(`share/icons/hicolor`). On Windows, `zalie.exe` goes to the top of the prefix, next to the OpenSSL and Visual C++
+runtime DLLs it loads, so that the directory can be copied to another machine.
+
+The packages of the [download table](#download) are made by `cpack` from a Release build, in `<build>/packages`:
+
+```bash
+cpack --config build/CPackConfig.cmake               # Linux: the .deb (needs dpkg-shlibdeps, from dpkg-dev)
+cpack --config build/CPackConfig.cmake -C Release    # Windows: the zip
+```
+
+The macOS disk image is made by the CI only (`.github/workflows/package.yml`), which also copies the Homebrew
+libraries (GCC runtime, OpenSSL) into the application bundle.
+
+### Run the tests
+
+```bash
+cmake -S . -B build -G Ninja -D CMAKE_BUILD_TYPE=Debug
+cmake --build build
+ctest --test-dir build --output-on-failure --timeout 60
+```
+
+See [Testing](../development/testing.md) for the organization of the tests, and [Build options](../reference/build-options.md)
+for the CMake options.
 
 ## Icon in the task bar (Linux)
 
@@ -92,17 +139,6 @@ from its build directory, Zalie writes its own entry at launch when **no** `zali
 - `zalie --no-desktop-entry` disables it; delete the two files to remove them.
 
 The desktop may take a second to notice a new entry: if the gear icon stays the first time, restart Zalie.
-
-## Run the tests
-
-```bash
-cmake -S . -B build -G Ninja -D CMAKE_BUILD_TYPE=Debug
-cmake --build build
-ctest --test-dir build --output-on-failure --timeout 60
-```
-
-See [Testing](../development/testing.md) for the organization of the tests, and [Build options](../reference/build-options.md)
-for the CMake options.
 
 ## Where are my data?
 

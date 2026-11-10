@@ -350,7 +350,8 @@ these:
 
 ## Distribution and project
 
-- Prebuilt packages: AppImage / Flatpak, a signed macOS bundle, a Windows installer.
+- More packages (the `.deb`, Windows zip and macOS disk image exist): AppImage / Flatpak, a signed and notarized
+  macOS bundle (Intel too), a signed Windows installer.
 - Continuous integration on the three platforms (the workflows are in `.github/workflows`).
 - A scheduled CI job building and testing Zalie against aeronet main: Zalie as an integration test of the client API.
 - The version and features of aeronet (`fullVersionStringView()`) in the About dialog.

@@ -8,11 +8,9 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
-#include <limits>
 #include <random>
 #include <span>
 #include <string_view>
-#include <system_error>
 #include <utility>
 
 #include "http-client-setup.hpp"
@@ -34,7 +32,6 @@ namespace zalie {
 
 namespace {
 
-constexpr std::string_view kHeaderForbidden("\r\n\0", 3);
 constexpr std::string_view kHttpScheme = "http://";
 constexpr std::string_view kBasicPrefix = "Basic ";
 constexpr std::string_view kAuthorization = "Authorization";
@@ -45,6 +42,11 @@ constexpr char kSentinelSeparator = '-';
 
 constexpr std::string_view kRefusedValue = "a generated value holds a line break or a null byte";
 constexpr std::string_view kUnreadableRow = "a row of the data file cannot be read";
+
+// A line break would split the header line, a null byte cuts it for some servers. Compared character by character: a
+// constant string with an embedded null byte was linked to other bytes by GCC 15 Debug on macOS (the check let a line
+// break through, in the UI test executable only).
+[[nodiscard]] constexpr bool IsForbiddenInHeader(char ch) noexcept { return ch == '\r' || ch == '\n' || ch == '\0'; }
 
 [[nodiscard]] std::uint64_t NewSeed() {
   std::random_device device;
@@ -214,7 +216,7 @@ bool TextTemplate::appendTo(std::span<const std::string_view> values, RawChars32
     const std::string_view value = values[part.variable];
     switch (part.encoding) {
       case SlotEncoding::checked:
-        if (value.find_first_of(kHeaderForbidden) != std::string_view::npos) {
+        if (std::ranges::any_of(value, IsForbiddenInHeader)) {
           return false;
         }
         out.append(value);

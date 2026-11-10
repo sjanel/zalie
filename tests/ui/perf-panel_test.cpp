@@ -406,7 +406,7 @@ TEST_F(PerfPanelTest, TheFirstRequestsShowTheirBodyOrTheirRefusedValue) {
   request.load->parameters.push_back(std::move(tag));
   replan(tab);
   ASSERT_FALSE(tab.perf->preview->requests.empty());
-  EXPECT_TRUE(tab.perf->preview->requests[0].refused);
+  EXPECT_TRUE(tab.perf->preview->requests[0].refused) << View(tab.perf->preview->requests[0].line);
 }
 
 TEST_F(PerfPanelTest, ThePlanUsesTheActiveEnvironmentOfTheCollection) {

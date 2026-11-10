@@ -9,8 +9,9 @@ set(CPACK_PACKAGE_VENDOR "Zalie contributors")
 set(CPACK_PACKAGE_CONTACT "Stephane Janel <67502353+sjanel@users.noreply.github.com>")
 set(CPACK_PACKAGE_VERSION "${ZALIE_VERSION_STRING}")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Light, fast and friendly HTTP client")
-set(CPACK_PACKAGE_DESCRIPTION
-    "Zalie keeps the good ideas of Bruno and Postman (collections, environments, code snippets) in a native "
+string(
+  CONCAT CPACK_PACKAGE_DESCRIPTION
+         "Zalie keeps the good ideas of Bruno and Postman (collections, environments, code snippets) in a native "
     "application of a few megabytes. Local only: no account, no cloud.")
 set(CPACK_PACKAGE_HOMEPAGE_URL "${PROJECT_HOMEPAGE_URL}")
 set(CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/LICENSE")
@@ -27,9 +28,19 @@ elseif(UNIX AND NOT APPLE)
   # entry (instead of the staging directory of cpack).
   set(CPACK_SET_DESTDIR ON)
   set(CPACK_INSTALL_PREFIX /usr)
-  set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
-  # A pre-release suffix sorts before the release in Debian versions with '~' (0.2.0~rc1 < 0.2.0), not with '-'.
+  # A suffix sorts before the release in Debian versions with '~' (0.2.0~dev < 0.2.0), not with '-': the package of a
+  # development version is upgraded by its release. The file name keeps the '-': GitHub renames release assets with a
+  # '~' in their name (and their .sha256 would no longer match).
   string(REPLACE "-" "~" CPACK_DEBIAN_PACKAGE_VERSION "${ZALIE_VERSION_STRING}")
+  execute_process(
+    COMMAND dpkg --print-architecture
+    OUTPUT_VARIABLE ZALIE_DEB_ARCHITECTURE
+    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  if(ZALIE_DEB_ARCHITECTURE)
+    set(CPACK_DEBIAN_FILE_NAME "zalie_${ZALIE_VERSION_STRING}_${ZALIE_DEB_ARCHITECTURE}.deb")
+  else()
+    set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+  endif()
   set(CPACK_DEBIAN_PACKAGE_SECTION web)
   set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
   # Loaded at run time by GLFW (dlopen), hence invisible to dpkg-shlibdeps.

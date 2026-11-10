@@ -38,3 +38,6 @@ CMake warns that some of these variables are unused when an option turns the mat
 ## Other platforms
 
 macOS and Windows are only compiled by the CI (`.github/workflows`): watch it after touching platform-specific code.
+The packages (`cmake/Packaging.cmake`, the install rules of `src/app/CMakeLists.txt`) are only made and checked by
+`package.yml`; locally, test the `.deb` with `cpack --config <tree>/CPackConfig.cmake -B "$XDG_RUNTIME_DIR/zalie-pkg"`
+(output and staging in RAM).

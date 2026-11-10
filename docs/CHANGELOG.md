@@ -76,6 +76,8 @@ First version.
 ### Platform
 
 - Linux, macOS and Windows; one self-contained executable (fonts and images embedded), in `<build>/bin`.
+- Packages: Debian / Ubuntu (`.deb`, x86_64), Windows (portable zip, x64), macOS (disk image, Apple Silicon),
+  attached to each release; the latest development build in the `dev` pre-release.
 - Link-time optimization of Release builds.
 - Linux desktop integration: desktop entry and icons installed by `cmake --install`, matched to the window (the dog
   in the task bar). Without an installed entry, Zalie writes one in `~/.local/share` at launch

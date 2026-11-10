@@ -90,7 +90,7 @@ cmake --preset debug && cmake --build --preset debug && ctest --preset debug
 3. **Docs**: the MkDocs page of the feature; `docs/ROADMAP.md` when relevant. The rest of the site and
    `mkdocs build --strict`: `agents/docs-and-changelog.md`.
 4. **`docs/CHANGELOG.md`**: a short entry for user visible changes (`agents/docs-and-changelog.md`). The version lives
-   in `VERSION` only.
+   in `VERSION` only (`X.Y.Z-dev` between releases, see `docs/development/contributing.md`).
 
 ## Git
 

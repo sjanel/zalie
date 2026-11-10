@@ -6,6 +6,7 @@
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "test-utils.hpp"
 #include "zalie/collection.hpp"
@@ -113,7 +114,7 @@ TEST_F(LoadPreviewTest, AQueryParameterTheRequestDoesNotHaveIsAddedForTheRun) {
   request.load->parameters.push_back(Parameter("", ValueSource::fixed, true));  // just added, no name yet
   listRows();
   ASSERT_GE(rows.size(), 2U);
-  for (std::size_t idx = rows.size() - 2; idx < rows.size(); ++idx) {
+  for (std::uint32_t idx = rows.size() - 2; idx < rows.size(); ++idx) {
     EXPECT_TRUE(rows[idx].queryParameter);
     EXPECT_TRUE(rows[idx].added);
     EXPECT_FALSE(rows[idx].unused);

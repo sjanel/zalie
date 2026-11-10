@@ -55,6 +55,8 @@ add_subdirectory(src/core)
 if(ZALIE_BUILD_APP)
   add_subdirectory(src/ui)
   add_subdirectory(src/app)
+  # After the dependencies: zlib-ng includes CPack too, and the last include writes CPackConfig.cmake.
+  include(cmake/Packaging.cmake)
 endif()
 
 if(ZALIE_BUILD_TESTS)

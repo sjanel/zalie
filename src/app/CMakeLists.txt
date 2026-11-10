@@ -33,16 +33,34 @@ if(WIN32)
 endif()
 
 if(APPLE)
+  # Bundle versions are numeric (X.Y.Z): without the suffix of a development version.
   set_target_properties(
     zalie
     PROPERTIES MACOSX_BUNDLE_BUNDLE_NAME "Zalie"
                MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.sjanel.zalie"
-               MACOSX_BUNDLE_SHORT_VERSION_STRING "${ZALIE_VERSION_STRING}"
-               MACOSX_BUNDLE_BUNDLE_VERSION "${ZALIE_VERSION_STRING}")
+               MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+               MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}")
 endif()
 
 include(GNUInstallDirs)
-install(TARGETS zalie RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} BUNDLE DESTINATION .)
+if(WIN32)
+  # Portable layout: zalie.exe at the top of the install directory (and of the zip package), next to the DLLs it
+  # loads, so that it runs on a machine without OpenSSL or the Visual C++ runtime.
+  install(TARGETS zalie RUNTIME DESTINATION .)
+  if(ZALIE_ENABLE_TLS)
+    cmake_path(GET OPENSSL_INCLUDE_DIR PARENT_PATH ZALIE_OPENSSL_ROOT)
+    file(GLOB ZALIE_OPENSSL_DLLS "${ZALIE_OPENSSL_ROOT}/bin/libssl-*.dll" "${ZALIE_OPENSSL_ROOT}/bin/libcrypto-*.dll")
+    if(ZALIE_OPENSSL_DLLS)
+      install(FILES ${ZALIE_OPENSSL_DLLS} DESTINATION .)
+    else()
+      message(STATUS "[zalie] no OpenSSL DLL in ${ZALIE_OPENSSL_ROOT}/bin (static OpenSSL?): none installed")
+    endif()
+  endif()
+  set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION .)
+  include(InstallRequiredSystemLibraries)
+else()
+  install(TARGETS zalie RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} BUNDLE DESTINATION .)
+endif()
 if(UNIX AND NOT APPLE)
   # Desktop integration (freedesktop): the desktop entry, matched by the desktop to the window through its WM_CLASS /
   # Wayland app id, gives Zalie its name and icon in the task bar and the applications menu. Its Exec line is the

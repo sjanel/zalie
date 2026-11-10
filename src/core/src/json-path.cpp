@@ -22,8 +22,6 @@ namespace zalie {
 
 namespace {
 
-constexpr std::size_t kNpos = std::string_view::npos;
-
 // Characters of a shorthand member name ('.name'): RFC 9535 allows letters, digits, '_' and non-ASCII; '-' and '$' are
 // accepted too, as most JSONPath implementations do ('.content-type').
 constexpr bool IsNameFirst(char ch) noexcept {
@@ -56,7 +54,7 @@ void ForEachElement(std::string_view array, Func&& func) {
   }
   while (true) {
     const std::size_t valueEnd = ValueEnd(array, pos);
-    assert(valueEnd != kNpos);
+    assert(valueEnd != std::string_view::npos);
     if (!func(array.substr(pos, valueEnd - pos))) {
       return;
     }

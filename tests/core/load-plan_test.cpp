@@ -7,6 +7,7 @@
 #include <fstream>
 #include <memory>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -180,6 +181,23 @@ TEST_F(LoadPlanTest, ALineBreakInAHeaderValueIsRefused) {
   const auto preview = plan.preview(0);
   ASSERT_FALSE(preview.has_value());
   EXPECT_TRUE(View(preview.error()).contains("line break"));
+}
+
+TEST(TextTemplateTest, OnlyACheckedValueRefusesALineBreakOrANullByte) {
+  const std::string_view refused[] = {"a\rb", "\n", std::string_view("a\0b", 3)};
+  for (const SlotEncoding encoding : {SlotEncoding::checked, SlotEncoding::raw}) {
+    TextTemplate text;
+    text.addPart({.literal = "v=", .variable = 0, .encoding = encoding});
+    text.addPart({.literal = ";"});
+    for (const std::string_view value : refused) {
+      RawChars32 out;
+      EXPECT_EQ(text.appendTo(std::span(&value, 1), out), encoding == SlotEncoding::raw) << static_cast<int>(encoding);
+    }
+    RawChars32 out;
+    const std::string_view accepted = "ok";
+    ASSERT_TRUE(text.appendTo(std::span(&accepted, 1), out));
+    EXPECT_EQ(View(out), "v=ok;");
+  }
 }
 
 TEST_F(LoadPlanTest, AGeneratedHeaderNameIsAnIssue) {

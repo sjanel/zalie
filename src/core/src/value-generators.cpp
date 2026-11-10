@@ -649,11 +649,12 @@ void SeedRange(LoadParameter& parameter, std::string_view value, std::int64_t no
         if (step == 0 || step > kMaxSeedDateStep || step < -kMaxSeedDateStep) {
           step = kSecondsPerDay;
         }
-        const std::int64_t last = first + ((kSeedDateCount - 1) * step);
-        const bool withTime = first % kSecondsPerDay != 0 || last % kSecondsPerDay != 0 ||
+        // Not 'last': it would hide std::chrono::last, visible here (MSVC C4459).
+        const std::int64_t lastDate = first + ((kSeedDateCount - 1) * step);
+        const bool withTime = first % kSecondsPerDay != 0 || lastDate % kSecondsPerDay != 0 ||
                               Trim(parameter.dateFrom).size() > kDateOnlySize;
         parameter.dateTo.clear();
-        AppendDate(parameter.dateTo, last, withTime ? kDateTimeFormat : kDefaultDateFormat);
+        AppendDate(parameter.dateTo, lastDate, withTime ? kDateTimeFormat : kDefaultDateFormat);
       }
       break;
     }

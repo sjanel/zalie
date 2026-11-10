@@ -21,7 +21,9 @@ env:
 
 jobs:
   linux:
-    name: Linux ${{ matrix.compiler }} ${{ matrix.build }}${{ matrix.asan == 'ON' && ' asan' || '' }}${{ matrix.app == 'OFF' && ' core' || '' }}
+    # Only the flags that are ON are named: 'Linux (gcc-13 Debug, app, asan)'.
+    name: >-
+      Linux (${{ matrix.compiler }} ${{ matrix.build }}${{ matrix.app == 'ON' && ', app' || '' }}${{ matrix.asan == 'ON' && ', asan' || '' }})
     strategy:
       fail-fast: false
       matrix:
@@ -29,7 +31,7 @@ jobs:
           - { compiler: gcc-13, build: Debug, asan: ON, app: ON }
           - { compiler: gcc-13, build: Debug, asan: OFF, app: OFF }
           - { compiler: clang-22, build: Debug, asan: ON, app: ON }
-          - { compiler: clang-22, build: Release, asan: OFF, app: ON, artifact: true }
+          - { compiler: clang-22, build: Release, asan: OFF, app: ON }
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -76,14 +78,6 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 180 -j 4
-
-      - name: Upload the executable
-        if: ${{ matrix.artifact }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: zalie-linux-x86_64
-          path: build/bin/zalie
-          retention-days: 7
 
   # Clang source-based coverage of the test suite, uploaded to Codecov (the README badge).
   coverage:
