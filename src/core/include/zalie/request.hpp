@@ -1,5 +1,8 @@
 #pragma once
 
+#include <array>
+#include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -77,19 +80,10 @@ struct Request {
 
 // Default Content-Type of a body mode (empty for BodyMode::none).
 [[nodiscard]] constexpr std::string_view DefaultContentType(BodyMode mode) noexcept {
-  switch (mode) {
-    case BodyMode::json:
-      return "application/json";
-    case BodyMode::text:
-      return "text/plain";
-    case BodyMode::xml:
-      return "application/xml";
-    case BodyMode::formUrlEncoded:
-      return "application/x-www-form-urlencoded";
-    case BodyMode::none:
-      break;
-  }
-  return {};
+  constexpr std::array<std::string_view, 5> kContentTypes{std::string_view{}, "application/json", "text/plain",
+                                                          "application/xml", "application/x-www-form-urlencoded"};
+  assert(static_cast<std::size_t>(mode) < kContentTypes.size());
+  return kContentTypes[static_cast<std::size_t>(mode)];
 }
 
 }  // namespace zalie

@@ -117,4 +117,9 @@ class ValueGenerators {
   ValueOrder _sharedOrder{ValueOrder::inOrder};
 };
 
+// Gives the range of 'parameter' (integers, decimals or dates, after a change of its source) a valid start: the fields
+// still empty or at their defaults start from 'value' (what the row sends now) when it fits, or from today
+// ('nowUnixSeconds', UTC) for dates. The others are kept. Does nothing for the other sources.
+void SeedRange(LoadParameter& parameter, std::string_view value, std::int64_t nowUnixSeconds);
+
 }  // namespace zalie

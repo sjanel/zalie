@@ -74,12 +74,13 @@ struct meta<zalie::HttpVersion> {
 template <>
 struct meta<zalie::ValueSource> {
   using enum zalie::ValueSource;
-  static constexpr std::array keys{
-      std::string_view{"fixed"},         std::string_view{"list"},       std::string_view{"integer-range"},
-      std::string_view{"decimal-range"}, std::string_view{"date-range"}, std::string_view{"random-string"},
-      std::string_view{"uuid"},          std::string_view{"timestamp"},  std::string_view{"data-file"}};
+  static constexpr std::array keys{std::string_view{"fixed"},         std::string_view{"list"},
+                                   std::string_view{"integer-range"}, std::string_view{"decimal-range"},
+                                   std::string_view{"date-range"},    std::string_view{"random-string"},
+                                   std::string_view{"uuid"},          std::string_view{"timestamp"},
+                                   std::string_view{"data-file"},     std::string_view{"omitted"}};
   static constexpr std::array value{fixed,        list, integerRange, decimalRange, dateRange,
-                                    randomString, uuid, timestamp,    dataFile};
+                                    randomString, uuid, timestamp,    dataFile,     omitted};
 };
 
 template <>

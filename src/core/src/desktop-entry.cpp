@@ -1,6 +1,5 @@
 #include "zalie/desktop-entry.hpp"
 
-#include <cstdlib>
 #include <expected>
 #include <filesystem>
 #include <span>
@@ -8,7 +7,9 @@
 #include <system_error>
 #include <utility>
 
+#include "zalie/encoding.hpp"
 #include "zalie/file-io.hpp"
+#include "zalie/paths.hpp"
 #include "zalie/raw-chars.hpp"
 
 namespace zalie {
@@ -20,53 +21,15 @@ namespace fs = std::filesystem;
 constexpr std::string_view kGeneratedMarker = "X-Zalie-Generated=true";
 constexpr std::string_view kExecutableKey = "X-Zalie-Executable=";
 
-std::string_view Env(const char* name) {
-  // Zalie never modifies its environment.
-  const char* pValue = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
-  return pValue == nullptr ? std::string_view{} : std::string_view{pValue};
-}
-
 fs::path EntryPath(const fs::path& dataDir) { return dataDir / "applications" / "zalie.desktop"; }
 
-// Escapes a value of type string (desktop entry specification, "Possible value types").
-void AppendEscapedString(std::string_view value, RawChars32& out) {
-  for (char ch : value) {
-    switch (ch) {
-      case '\\':
-        out.append(std::string_view{"\\\\"});
-        break;
-      case '\n':
-        out.append(std::string_view{"\\n"});
-        break;
-      case '\t':
-        out.append(std::string_view{"\\t"});
-        break;
-      case '\r':
-        out.append(std::string_view{"\\r"});
-        break;
-      default:
-        out.push_back(ch);
-        break;
-    }
-  }
-}
-
-// The Exec value running 'executable' with the dropped files: the path is a quoted argument, in which '"', '`', '$'
-// and '\' are escaped by a backslash and '%' is doubled; the whole value is then escaped as a string ("The Exec key").
+// The Exec value running 'executable' with the dropped files: the path is a quoted argument (kDesktopExecEscapes),
+// and the whole value is then escaped as a string ("The Exec key").
 RawChars32 ExecValue(std::string_view executable) {
   RawChars32 quoted;
-  quoted.push_back('"');
-  for (char ch : executable) {
-    if (ch == '"' || ch == '`' || ch == '$' || ch == '\\') {
-      quoted.push_back('\\');
-    } else if (ch == '%') {
-      quoted.push_back('%');
-    }
-    quoted.push_back(ch);
-  }
-  quoted.append(std::string_view{"\" %F"});
+  AppendAll(quoted, Escaped(executable, kDesktopExecEscapes, '"'), " %F");
   RawChars32 escaped;
-  AppendEscapedString(quoted, escaped);
+  AppendAll(escaped, Escaped(quoted, kDesktopStringEscapes));
   return escaped;
 }
 
@@ -80,29 +43,22 @@ std::string_view RecordedExecutable(std::string_view content) {
   return rest.substr(0, rest.find('\n'));
 }
 
-// Inverse of AppendEscapedString, for the recorded executable.
+// Inverse of the escaping of a string value (kDesktopStringEscapes), for the recorded executable.
 RawChars32 UnescapeString(std::string_view value) {
-  RawChars32 out;
+  static constexpr std::string_view kControlEscapes = "ntr";
+  RawChars32 out(value.size());  // unescaping only shrinks
+  char* pOut = out.data();
   for (std::size_t pos = 0; pos < value.size(); ++pos) {
-    if (value[pos] != '\\' || pos + 1 == value.size()) {
-      out.push_back(value[pos]);
-      continue;
+    char ch = value[pos];
+    if (ch == '\\' && pos + 1 < value.size()) {
+      ch = value[++pos];
+      if (kControlEscapes.contains(ch)) {
+        ch = ControlEscape(ch);
+      }
     }
-    switch (value[++pos]) {
-      case 'n':
-        out.push_back('\n');
-        break;
-      case 't':
-        out.push_back('\t');
-        break;
-      case 'r':
-        out.push_back('\r');
-        break;
-      default:
-        out.push_back(value[pos]);
-        break;
-    }
+    *pOut++ = ch;
   }
+  out.setEnd(pOut);
   return out;
 }
 
@@ -120,12 +76,12 @@ std::expected<void, RawChars32> WriteIfDifferent(const fs::path& path, std::stri
 
 XdgDataDirs XdgDataDirsFromEnvironment() {
   XdgDataDirs dirs;
-  if (const fs::path dataHome = PathFromUtf8(Env("XDG_DATA_HOME")); dataHome.is_absolute()) {
+  if (const fs::path dataHome = PathFromUtf8(EnvironmentVariable("XDG_DATA_HOME")); dataHome.is_absolute()) {
     dirs.dataHome = dataHome;
-  } else if (const fs::path home = PathFromUtf8(Env("HOME")); home.is_absolute()) {
+  } else if (const fs::path home = PathFromUtf8(EnvironmentVariable("HOME")); home.is_absolute()) {
     dirs.dataHome = home / ".local" / "share";
   }
-  std::string_view dataDirs = Env("XDG_DATA_DIRS");
+  std::string_view dataDirs = EnvironmentVariable("XDG_DATA_DIRS");
   if (dataDirs.empty()) {
     dataDirs = "/usr/local/share:/usr/share";
   }
@@ -145,25 +101,20 @@ RawChars32 MakeDesktopEntry(const fs::path& executable, const fs::path& iconPath
   const RawChars32 icon = PathToUtf8(iconPath);
   RawChars32 content;
   AppendAll(content,
-            std::string_view{"[Desktop Entry]\n"
-                             "# Written by Zalie at its launch, for its name and icon in the task bar. Delete "
-                             "it to remove them;\n"
-                             "# 'zalie --no-desktop-entry' does not create it.\n"
-                             "Type=Application\n"
-                             "Name=Zalie\n"
-                             "GenericName=HTTP Client\n"
-                             "Comment=A light, fast and friendly HTTP client\n"
-                             "Exec="},
-            ExecValue(exe), std::string_view{"\nIcon="});
-  AppendEscapedString(icon, content);
-  AppendAll(content,
-            std::string_view{"\nTerminal=false\n"
-                             "Categories=Development;WebDevelopment;\n"
-                             "Keywords=http;rest;api;curl;postman;bruno;\n"
-                             "StartupWMClass=Zalie\n"},
-            kGeneratedMarker, std::string_view{"\n"}, kExecutableKey);
-  AppendEscapedString(exe, content);
-  content.push_back('\n');
+            "[Desktop Entry]\n"
+            "# Written by Zalie at its launch, for its name and icon in the task bar. Delete it to remove them;\n"
+            "# 'zalie --no-desktop-entry' does not create it.\n"
+            "Type=Application\n"
+            "Name=Zalie\n"
+            "GenericName=HTTP Client\n"
+            "Comment=A light, fast and friendly HTTP client\n"
+            "Exec=",
+            ExecValue(exe), "\nIcon=", Escaped(icon, kDesktopStringEscapes),
+            "\nTerminal=false\n"
+            "Categories=Development;WebDevelopment;\n"
+            "Keywords=http;rest;api;curl;postman;bruno;\n"
+            "StartupWMClass=Zalie\n",
+            kGeneratedMarker, '\n', kExecutableKey, Escaped(exe, kDesktopStringEscapes), '\n');
   return content;
 }
 

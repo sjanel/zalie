@@ -115,6 +115,77 @@ TEST(Syntax, Http) {
   EXPECT_TRUE(Tokens(SyntaxLanguage::http, "body: not a header", state).empty());
 }
 
+TEST(Syntax, JsonKeywordsAndNumbers) {
+  EXPECT_EQ(Tokens(SyntaxLanguage::json, "[null,false,12e+3,0.5]"), (Expected{{"[", punctuation},
+                                                                              {"null", keyword},
+                                                                              {",", punctuation},
+                                                                              {"false", keyword},
+                                                                              {",", punctuation},
+                                                                              {"12e+3", number},
+                                                                              {",", punctuation},
+                                                                              {"0.5", number},
+                                                                              {"]", punctuation}}));
+  // A backslash before the closing quote escapes it, and a key may be followed by blanks before its colon.
+  EXPECT_EQ(Tokens(SyntaxLanguage::json, "\"a\\\\\" \t: \"b\\\""),
+            (Expected{{"\"a\\\\\"", key}, {":", punctuation}, {"\"b\\\"", string}}));
+}
+
+TEST(Syntax, XmlDoubleQuotedValueAcrossLines) {
+  SyntaxState state = 0;
+  EXPECT_EQ(Tokens(SyntaxLanguage::xml, R"(<?xml version="1.0 ?>)", state),
+            (Expected{{"<?xml", tag}, {"version", attribute}, {"=", punctuation}, {R"("1.0 ?>)", string}}));
+  EXPECT_EQ(Tokens(SyntaxLanguage::xml, "still in the value", state), (Expected{{"still in the value", string}}));
+  EXPECT_EQ(Tokens(SyntaxLanguage::xml, R"(end" ?>)", state), (Expected{{R"(end")", string}, {"?>", tag}}));
+  EXPECT_EQ(state, 0);
+  // Text without tag, then a lone '/' and '?' in a tag.
+  EXPECT_TRUE(Tokens(SyntaxLanguage::xml, "plain text", state).empty());
+  EXPECT_EQ(Tokens(SyntaxLanguage::xml, "<a / ?", state), (Expected{{"<a", tag}, {"/", attribute}, {"?", attribute}}));
+}
+
+TEST(Syntax, ShellQuotes) {
+  SyntaxState state = 0;
+  // ANSI-C quotes honor escapes, single quotes do not.
+  EXPECT_EQ(Tokens(SyntaxLanguage::shell, R"(echo $'it\'s' 'a\' x#y)", state),
+            (Expected{{"echo", keyword}, {R"($'it\'s')", string}, {R"('a\')", string}}));
+  EXPECT_EQ(Tokens(SyntaxLanguage::shell, R"(printf "a\"b)", state),
+            (Expected{{"printf", keyword}, {R"("a\"b)", string}}));
+  EXPECT_EQ(state, 2);
+  // The continuation of a double quoted argument honors escapes too.
+  EXPECT_EQ(Tokens(SyntaxLanguage::shell, R"(c\"d" -v)", state), (Expected{{R"(c\"d")", string}, {"-v", attribute}}));
+  EXPECT_EQ(state, 0);
+  // A word glued to a quote, a backslash that does not end the line.
+  EXPECT_EQ(Tokens(SyntaxLanguage::shell, R"(a"b"c \x)", state), (Expected{{"a", keyword}, {R"("b")", string}}));
+}
+
+TEST(Syntax, CodeBackquotesAndVariables) {
+  SyntaxState state = 0;
+  EXPECT_EQ(Tokens(SyntaxLanguage::code, "body := `{", state),
+            (Expected{{":", punctuation}, {"=", punctuation}, {"`", string}, {"{", string}}));
+  EXPECT_EQ(state, 2);
+  EXPECT_EQ(Tokens(SyntaxLanguage::code, "\"a\": 1", state), (Expected{{"\"a\": 1", string}}));
+  EXPECT_EQ(Tokens(SyntaxLanguage::code, "}` + 'c' - $x", state),
+            (Expected{{"}`", string}, {"'c'", string}, {"$x", attribute}}));
+  EXPECT_EQ(state, 0);
+  // A ')' in a raw string that is not followed by the delimiter and '"' does not end it.
+  EXPECT_EQ(Tokens(SyntaxLanguage::code, R"(R"x(a) b)x")", state),
+            (Expected{{"R\"", string}, {R"(x(a) b)x")", string}}));
+  EXPECT_EQ(state, 0);
+  EXPECT_EQ(Tokens(SyntaxLanguage::code, R"(R"x(a) b)", state), (Expected{{"R\"", string}, {"x(a) b", string}}));
+  EXPECT_EQ(state, 1);
+}
+
+TEST(Syntax, HttpStatusLineAndBody) {
+  SyntaxState state = 0;
+  EXPECT_EQ(Tokens(SyntaxLanguage::http, "HTTP/1.1 200 OK", state), (Expected{{"HTTP/1.1", keyword}}));
+  EXPECT_EQ(Tokens(SyntaxLanguage::http, "X-Empty:", state), (Expected{{"X-Empty", key}, {":", punctuation}}));
+  EXPECT_TRUE(Tokens(SyntaxLanguage::http, "\r", state).empty());
+  EXPECT_EQ(state, 2);
+  EXPECT_TRUE(Tokens(SyntaxLanguage::http, "Not: a header", state).empty());
+  // A request line without space is a lone method.
+  state = 0;
+  EXPECT_EQ(Tokens(SyntaxLanguage::http, "GET", state), (Expected{{"GET", keyword}}));
+}
+
 TEST(Syntax, PlainHighlightsVariables) {
   EXPECT_EQ(Tokens(SyntaxLanguage::plain, "{{base}}/users/{{ id }}?x={{"),
             (Expected{{"{{base}}", variable}, {"{{ id }}", variable}}));

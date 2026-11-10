@@ -1,5 +1,7 @@
 #include "zalie/value-generators.hpp"
 
+#include <aeronet/decimal-writer.hpp>
+#include <aeronet/ndigits.hpp>
 #include <algorithm>
 #include <amc/vector.hpp>
 #include <array>
@@ -32,6 +34,16 @@ namespace {
 constexpr std::uint64_t kMaxCount = std::numeric_limits<std::uint64_t>::max();
 constexpr std::string_view kLowerCaseLetters = "abcdefghijklmnopqrstuvwxyz";
 constexpr std::string_view kDefaultDateFormat = "%Y-%m-%d";
+constexpr std::string_view kDateTimeFormat = "%Y-%m-%dT%H:%M:%S";
+// "2026-01-31" and "2026-01-31T12:30".
+constexpr std::size_t kDateOnlySize = 10;
+constexpr std::size_t kDateMinutesSize = 16;
+constexpr std::int64_t kSecondsPerDay = 86400;
+// A date range seeded from a single date covers a week, or 7 steps; a step beyond a year is not kept for it.
+constexpr std::int64_t kSeedDateCount = 7;
+constexpr std::int64_t kMaxSeedDateStep = 366 * kSecondsPerDay;
+// Same bound as the interface.
+constexpr std::size_t kMaxSeedPadding = 20;
 constexpr std::string_view kDateConversions = "YmdHMSjs%";
 constexpr std::uint32_t kMaxRandomLength = 1U << 20;
 constexpr std::uint32_t kMaxDecimals = 30;
@@ -179,21 +191,18 @@ constexpr std::size_t kDateConversionBytes = 24;
 
 // Appends 'value' with at least 'width' digits, its sign first.
 void AppendPadded(RawChars32& out, std::int64_t value, std::uint32_t width) {
-  std::array<char, kIntegerBytes> digits{};
-  const auto res = std::to_chars(digits.data(), digits.data() + digits.size(), value);
-  std::string_view text(digits.data(), static_cast<std::size_t>(res.ptr - digits.data()));
+  // The magnitude of the smallest value has no positive counterpart: computed in unsigned.
+  const std::uint64_t magnitude =
+      value < 0 ? ~static_cast<std::uint64_t>(value) + 1U : static_cast<std::uint64_t>(value);
+  const std::uint8_t nbDigits = aeronet::ndigits(magnitude);
+  const std::size_t nbZeros = width > nbDigits ? width - nbDigits : 0U;
+  out.ensureAvailableCapacityExponential(1U + nbZeros + nbDigits);
+  char* pData = out.end();
   if (value < 0) {
-    out.push_back('-');
-    text.remove_prefix(1);
+    *pData++ = '-';
   }
-  for (std::size_t idx = text.size(); idx < width; ++idx) {
-    out.push_back('0');
-  }
-  // Not append(): GCC 15 sees its branch for copies over 32 bytes and reports a read past 'digits' (-Warray-bounds).
-  out.ensureAvailableCapacity(text.size());
-  char* pEnd = out.data() + out.size();
-  std::memcpy(pEnd, text.data(), text.size());
-  out.setEnd(pEnd + text.size());
+  std::memset(pData, '0', nbZeros);
+  out.setEnd(aeronet::WriteU64(pData + nbZeros, magnitude, nbDigits));
 }
 
 void AppendDate(RawChars32& out, std::int64_t seconds, std::string_view format) {
@@ -410,6 +419,9 @@ std::uint32_t ValueGenerators::add(const LoadParameter& parameter, const std::fi
     case ValueSource::fixed:
       error.assign(std::string_view{"A fixed value is not generated"});
       return kNoVariable;
+    case ValueSource::omitted:
+      error.assign(std::string_view{"Only a query parameter can be left out"});
+      return kNoVariable;
   }
   _maxGeneratedBytes += maxBytes;
   _variables.push_back(variable);
@@ -520,7 +532,7 @@ void ValueGenerators::generate(const Variable& variable, std::uint32_t index, st
       break;
     }
     case Kind::randomInt:
-      AppendInt(out, Hash(_seed + index, number) % 1001U);
+      AppendAll(out, Hash(_seed + index, number) % 1001U);
       break;
     case Kind::clock: {
       [[maybe_unused]] const bool isKnown = AppendDynamicVariable(variable.text, out);
@@ -529,7 +541,8 @@ void ValueGenerators::generate(const Variable& variable, std::uint32_t index, st
     }
     case Kind::list:
     case Kind::dataFile:
-      break;  // views of the list or of the row: nothing to generate
+      assert(false && "views of the list or of the row: the cursor reads them, nothing to generate");
+      break;
   }
 }
 
@@ -573,6 +586,80 @@ bool ValueGenerators::Cursor::fill(std::uint64_t number) {
     }
   }
   return true;
+}
+
+void SeedRange(LoadParameter& parameter, std::string_view value, std::int64_t nowUnixSeconds) {
+  // The size of a fresh range, kept when it starts from the value: 100 integers, a span of 1, a week of days.
+  const LoadParameter defaults;
+  value = Trim(value);
+  const char* pEnd = value.data() + value.size();
+  switch (parameter.source) {
+    case ValueSource::integerRange: {
+      std::int64_t first = 0;
+      const auto [ptr, errc] = std::from_chars(value.data(), pEnd, first);
+      if (errc != std::errc{} || ptr != pEnd || parameter.integerFrom != defaults.integerFrom ||
+          parameter.integerTo != defaults.integerTo) {
+        return;
+      }
+      const std::int64_t span = defaults.integerTo - defaults.integerFrom;
+      parameter.integerFrom = first;
+      parameter.integerTo = first > std::numeric_limits<std::int64_t>::max() - span
+                                ? std::numeric_limits<std::int64_t>::max()
+                                : first + span;
+      if (parameter.integerPadding == 0 && value.size() > 1 && value.front() == '0') {
+        // "007": the values keep their leading zeros.
+        parameter.integerPadding = static_cast<std::uint8_t>(std::min<std::size_t>(value.size(), kMaxSeedPadding));
+      }
+      break;
+    }
+    case ValueSource::decimalRange: {
+      double first = 0.0;
+      const auto [ptr, errc] = std::from_chars(value.data(), pEnd, first);
+      if (errc != std::errc{} || ptr != pEnd || !std::isfinite(first) ||
+          parameter.decimalFrom != defaults.decimalFrom || parameter.decimalTo != defaults.decimalTo) {
+        return;
+      }
+      parameter.decimalFrom = first;
+      parameter.decimalTo = first + (defaults.decimalTo - defaults.decimalFrom);
+      if (const std::size_t point = value.find('.'); point != std::string_view::npos) {
+        parameter.decimals = static_cast<std::uint8_t>(std::min<std::size_t>(value.size() - point - 1, kMaxDecimals));
+      }
+      break;
+    }
+    case ValueSource::dateRange: {
+      using namespace std::chrono;
+      std::int64_t first = 0;
+      if (Trim(parameter.dateFrom).empty()) {
+        if (ParseDate(value, first)) {
+          parameter.dateFrom.assign(value);
+          if (parameter.dateFormat.empty() && value.size() > kDateOnlySize) {
+            // The values keep the shape of the request's: "2026-01-31T12:30" sends its time too.
+            parameter.dateFormat = Concat({kDefaultDateFormat, value.substr(kDateOnlySize, 1),
+                                           value.size() > kDateMinutesSize ? "%H:%M:%S" : "%H:%M"});
+          }
+        } else {
+          first = floor<days>(sys_seconds{seconds{nowUnixSeconds}}).time_since_epoch().count() * kSecondsPerDay;
+          AppendDate(parameter.dateFrom, first, kDefaultDateFormat);
+        }
+      } else if (!ParseDate(Trim(parameter.dateFrom), first)) {
+        return;  // typed by the user: the plan tells what is wrong with it
+      }
+      if (Trim(parameter.dateTo).empty()) {
+        std::int64_t step = parameter.dateStepSeconds;
+        if (step == 0 || step > kMaxSeedDateStep || step < -kMaxSeedDateStep) {
+          step = kSecondsPerDay;
+        }
+        const std::int64_t last = first + ((kSeedDateCount - 1) * step);
+        const bool withTime = first % kSecondsPerDay != 0 || last % kSecondsPerDay != 0 ||
+                              Trim(parameter.dateFrom).size() > kDateOnlySize;
+        parameter.dateTo.clear();
+        AppendDate(parameter.dateTo, last, withTime ? kDateTimeFormat : kDefaultDateFormat);
+      }
+      break;
+    }
+    default:
+      break;
+  }
 }
 
 }  // namespace zalie

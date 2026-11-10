@@ -23,11 +23,10 @@
 #include <thread>
 #include <utility>
 
+#include "app-test-fixture.hpp"
 #include "test-utils.hpp"
-#include "ui-test-fixture.hpp"
 #include "zalie/collection.hpp"
 #include "zalie/exchange.hpp"
-#include "zalie/executor.hpp"
 #include "zalie/file-io.hpp"
 #include "zalie/history.hpp"
 #include "zalie/latency-histogram.hpp"
@@ -44,146 +43,6 @@
 
 namespace zalie {
 namespace {
-
-using namespace std::chrono_literals;
-
-// The window (child windows included) of this frame whose name contains 'part' ("parent/##child_1234ABCD").
-const ImGuiWindow* ActiveWindow(std::string_view part) {
-  for (const ImGuiWindow* pWindow : ImGui::GetCurrentContext()->Windows) {
-    if (pWindow->Active && std::string_view(pWindow->Name).contains(part)) {
-      return pWindow;
-    }
-  }
-  return nullptr;
-}
-
-// Whether a modal popup is open.
-bool ModalOpen() { return ImGui::GetTopMostPopupModal() != nullptr; }
-
-class AppTest : public test::ImGuiContextFixture {
- protected:
-  AppTest() : workspace(home.path()) {
-    workspace.load();  // first launch: the example collection
-    app = std::make_unique<ui::App>(workspace, executor);
-    app->init(1.0F);
-  }
-
-  ~AppTest() override {
-    app.reset();  // before the Dear ImGui context (it unregisters its textures)
-  }
-
-  void frame(int count = 1) {
-    for (int i = 0; i < count; ++i) {
-      app->beforeNewFrame();
-      runFrame([this] { app->frame(); });
-    }
-  }
-
-  void press(ImGuiKeyChord chord) {
-    Key(chord, true);
-    frame();
-    Key(chord, false);
-    frame();
-  }
-
-  // Waits (rendering frames) until the active tab has a response.
-  bool waitResponse() {
-    const auto deadline = std::chrono::steady_clock::now() + 20s;
-    while (std::chrono::steady_clock::now() < deadline) {
-      frame();
-      const ui::RequestTab* pTab = app->activeTab();
-      if (pTab != nullptr && !pTab->pending() && pTab->exchange) {
-        return true;
-      }
-      std::this_thread::sleep_for(5ms);
-    }
-    return false;
-  }
-
-  // A response with the given body, shown in the active tab.
-  void showBody(std::string_view contentType, std::string_view body) {
-    Exchange exchange;
-    exchange.request.url = "http://example.com/x";
-    Response& response = exchange.response;
-    response.status = 200;
-    response.reason = "OK";
-    response.state = ExchangeState::completed;
-    response.headers.push_back({"content-type", contentType});
-    response.body.raw.append(body);
-    response.body.analyze(contentType);
-    app->showExchange(*app->activeTab(), std::move(exchange));
-  }
-
-  // Renders frames until the Performance tab has the plan of its request as it is now.
-  bool waitPlan(ui::RequestTab& tab) {
-    const auto deadline = std::chrono::steady_clock::now() + 20s;
-    while (std::chrono::steady_clock::now() < deadline) {
-      frame();
-      if (tab.perf->planCurrent()) {
-        return true;
-      }
-      app->planCompiler().waitIdle(50ms);
-    }
-    return false;
-  }
-
-  // Renders frames until the last run of the Performance tab is over.
-  bool waitRun(ui::RequestTab& tab) {
-    const auto deadline = std::chrono::steady_clock::now() + 20s;
-    while (std::chrono::steady_clock::now() < deadline) {
-      frame();
-      if (tab.perf->snapshot && tab.perf->snapshot->phase == LoadPhase::finished && !tab.perf->running()) {
-        return true;
-      }
-      std::this_thread::sleep_for(5ms);
-    }
-    return false;
-  }
-
-  // Focusing a tab makes the Performance tabs list their rows and compile their plan again: the tests edit the
-  // requests directly, without the interface.
-  void refresh() { app->openPerformanceTab(app->activeTabIndex()); }
-
-  // An unsaved request to 'path' of the local server, and its Performance tab.
-  ui::RequestTab& perfTabFor(std::string_view url, Method method = Method::get) {
-    ui::RequestTab& source = app->newScratchTab();
-    source.scratch.url.assign(url);
-    source.scratch.method = method;
-    SyncParamsFromUrl(source.scratch);
-    frame();
-    return app->openPerformanceTab(app->activeTabIndex());
-  }
-
-  [[nodiscard]] static std::string LocalUrl(const aeronet::SingleHttpServer& server, std::string_view path) {
-    return "http://127.0.0.1:" + std::to_string(server.port()) + std::string(path);
-  }
-
-  std::uint64_t exampleRequestId(std::size_t index) {
-    return workspace[0].collection.root.folders[0].requests[static_cast<std::uint32_t>(index)].id;
-  }
-
-  // Shows the history in the sidebar and double clicks its last entry.
-  void doubleClickLastHistoryEntry() {
-    app->showHistory(true);
-    frame(3);
-    const ImGuiWindow* pList = ActiveWindow("/##sideContent_");
-    ASSERT_NE(pList, nullptr);
-    // The entries are the last items of the list.
-    MouseMove(ImVec2(pList->Pos.x + 40.0F, pList->DC.CursorMaxPos.y - 4.0F));
-    frame();
-    for (int click = 0; click < 2; ++click) {
-      MouseButton(true);
-      frame();
-      MouseButton(false);
-      frame();
-    }
-  }
-
-  test::TempDir home;
-  Workspace workspace;
-  Executor executor;
-  std::unique_ptr<ui::App> app;
-};
 
 TEST_F(AppTest, WelcomeScreen) {
   frame(3);
@@ -253,6 +112,48 @@ TEST_F(AppTest, ShortcutsManageTabs) {
   EXPECT_FLOAT_EQ(workspace.settings().uiScale, 1.1F);
   press(ImGuiMod_Ctrl | ImGuiKey_0);
   EXPECT_FLOAT_EQ(workspace.settings().uiScale, 1.0F);
+  press(ImGuiMod_Ctrl | ImGuiKey_Minus);
+  EXPECT_FLOAT_EQ(workspace.settings().uiScale, 0.9F);
+  press(ImGuiMod_Ctrl | ImGuiKey_0);
+  // The previous tab, the URL bar, saving.
+  press(ImGuiMod_Ctrl | ImGuiKey_T);
+  ASSERT_EQ(app->activeTabIndex(), 1U);
+  press(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Tab);
+  EXPECT_EQ(app->activeTabIndex(), 0U);
+  app->activeTab()->focusUrl = false;
+  press(ImGuiMod_Ctrl | ImGuiKey_L);
+  EXPECT_TRUE(ImGui::IsAnyItemActive());  // the URL field, focused then cleared by the frame
+  press(ImGuiMod_Ctrl | ImGuiKey_S);
+  EXPECT_EQ(lastToast(), "Saved");
+}
+
+TEST_F(AppTest, TabsIgnoreWhatDoesNotExist) {
+  app->openRequest(424242);  // no such request
+  EXPECT_EQ(app->tabCount(), 0U);
+  app->sendActiveTab();  // no tab
+  app->closeTab(3);
+  // Closing a tab before the active one keeps the same tab active.
+  app->openRequest(exampleRequestId(0));
+  app->openRequest(exampleRequestId(1));
+  app->openRequest(exampleRequestId(2));
+  app->closeTab(0);
+  EXPECT_EQ(app->activeTabIndex(), 1U);
+  EXPECT_EQ(app->activeTab()->requestId, exampleRequestId(2));
+}
+
+TEST_F(AppTest, ThePerformanceTabOfAnUnsavedRequestFollowsIt) {
+  ui::RequestTab& perf = perfTabFor("http://127.0.0.1:1/x");
+  ui::RequestTab& source = app->tab(0);
+  ASSERT_EQ(app->requestOf(perf), &source.scratch);
+  // Saved: the Performance tab follows the request into its collection (as Save to... does).
+  source.requestId = exampleRequestId(1);
+  EXPECT_EQ(app->requestOf(perf), app->requestOf(source));
+  EXPECT_EQ(perf.requestId, exampleRequestId(1));
+  // Without its request tab, the Performance tab of an unsaved request has no request.
+  ui::RequestTab& orphan = perfTabFor("http://127.0.0.1:1/y");
+  app->closeTab(app->tabCount() - 2);
+  EXPECT_EQ(app->requestOf(orphan), nullptr);
+  frame(2);
 }
 
 TEST_F(AppTest, ShortcutsUseCmdWithMacOSBehaviors) {
@@ -447,6 +348,32 @@ TEST_F(AppTest, ImportsAndDialogs) {
   EXPECT_TRUE(app->toasts().back().error);
 }
 
+TEST_F(AppTest, ImportsReportWhatTheyCannotRead) {
+  // A folder that is not a Bruno collection.
+  const std::filesystem::path empty = home.path() / "empty";
+  std::filesystem::create_directories(empty);
+  EXPECT_FALSE(app->importPath(empty));
+  EXPECT_TRUE(app->toasts().back().error);
+  // A Zalie collection file: opened once.
+  EXPECT_FALSE(app->importPath(home.path() / "missing.zalie.json"));
+  workspace.saveAll();
+  const std::size_t nbCollections = workspace.size();
+  EXPECT_TRUE(app->importPath(workspace[0].path));
+  EXPECT_EQ(workspace.size(), nbCollections);
+  EXPECT_TRUE(lastToast().starts_with("Opened collection '")) << lastToast();
+  // A collection without the .zalie.json suffix.
+  const std::filesystem::path copy = home.path() / "copy.json";
+  std::filesystem::copy_file(workspace[0].path, copy);
+  EXPECT_TRUE(app->importPath(copy));
+  EXPECT_EQ(workspace.size(), nbCollections + 1);
+  // A broken Postman export.
+  const std::filesystem::path postman = home.path() / "broken.postman.json";
+  std::ofstream(postman)
+      << R"({"info": {"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},)";
+  EXPECT_FALSE(app->importPath(postman));
+  EXPECT_TRUE(app->toasts().back().error);
+}
+
 TEST_F(AppTest, FilterTreeAndHistory) {
   ui::RequestTab& tab = app->newScratchTab();
   tab.scratch.url.assign(std::string_view{"http://127.0.0.1:1/"});
@@ -506,12 +433,13 @@ TEST_F(AppTest, CopyingAHistoryEntryKeepsTheVariablesOfARequestSendingIt) {
 }
 
 TEST_F(AppTest, ShutdownRestoresOpenTabs) {
+  app->newScratchTab();  // not restored: unsaved
   app->openRequest(exampleRequestId(2));
   app->openRequest(exampleRequestId(0));
-  app->newScratchTab();  // not restored: unsaved
   frame(2);
   app->shutdown();
   app.reset();
+  std::ofstream(home.path() / "settings.json") << "{ broken";
 
   Workspace reloaded(home.path());
   reloaded.load();
@@ -520,7 +448,35 @@ TEST_F(AppTest, ShutdownRestoresOpenTabs) {
   ui::App restored(reloaded, executor);
   restored.init(1.0F);
   EXPECT_EQ(restored.tabCount(), 2U);
+  EXPECT_EQ(restored.activeTabIndex(), 1U);
+  ASSERT_FALSE(restored.toasts().empty());  // the settings could not be read
+  EXPECT_TRUE(restored.toasts().back().error);
   app = std::make_unique<ui::App>(workspace, executor);  // for the fixture teardown
+}
+
+TEST_F(AppTest, ShutdownStopsTheRuns) {
+  aeronet::Router router;
+  router.setPath(aeronet::http::Method::GET, "/x", [](const aeronet::HttpRequestView& req) {
+    std::this_thread::sleep_for(5ms);
+    return req.makeResponse(200, "ok", "text/plain");
+  });
+  aeronet::SingleHttpServer server(aeronet::HttpServerConfig{}.withPort(0).withPollInterval(20ms), std::move(router));
+  server.start();
+  ui::RequestTab& tab = perfTabFor(LocalUrl(server, "/x"));
+  app->requestOf(tab)->load.emplace().durationMs = 0;  // no limit
+  app->requestOf(tab)->load->connections = 1;
+  refresh();
+  ASSERT_TRUE(waitPlan(tab));
+  app->sendActiveTab();
+  const auto deadline = std::chrono::steady_clock::now() + 20s;
+  while (std::chrono::steady_clock::now() < deadline && !tab.perf->running()) {
+    frame();
+    std::this_thread::sleep_for(5ms);
+  }
+  ASSERT_TRUE(tab.perf->running());
+  app->shutdown();
+  app.reset();  // stops it again, then waits for its threads
+  app = std::make_unique<ui::App>(workspace, executor);
 }
 
 TEST_F(AppTest, JsonPathFilter) {

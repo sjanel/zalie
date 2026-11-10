@@ -121,6 +121,13 @@ if(ZALIE_BUILD_APP)
   target_compile_definitions(zalie_imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS
                                                 IMGUI_USER_CONFIG="zalie/ui/imconfig-zalie.hpp")
   set_target_properties(zalie_imgui PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  if(ZALIE_BUILD_TESTS)
+    # With its tests, Zalie builds Dear ImGui with the hooks of its test engine: every item laid out is reported with
+    # its identifier, rectangle and label, which is how the headless tests find a widget and click it. The hooks do
+    # nothing unless a test asks for them, and a build without tests (as the release preset) does not have them.
+    target_sources(zalie_imgui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/imgui-test-hooks.cpp)
+    target_compile_definitions(zalie_imgui PUBLIC IMGUI_ENABLE_TEST_ENGINE)
+  endif()
 
   # stb_image (PNG / JPEG / GIF / BMP decoding) and stb_image_write (PNG screenshots).
   add_library(zalie_stb STATIC ${CMAKE_CURRENT_SOURCE_DIR}/src/ui/src/stb-impl.cpp)

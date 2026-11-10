@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -194,6 +195,133 @@ TEST_F(WidgetsTest, TextViewSelectsCopiesAndFinds) {
   EXPECT_EQ(state.selectionAnchor, ui::TextViewState::kNoLine);
 }
 
+TEST_F(WidgetsTest, TextViewDragsShiftClicksAndHasAContextMenu) {
+  const std::string text = "zero\none\ntwo\nthree\nfour\n";
+  LineIndex lines;
+  lines.build(text, SyntaxLanguage::plain);
+  ui::TextViewState state;
+  const auto draw = [&] {
+    ImGui::Dummy(ImVec2(10, 40));  // room above the view, for the mouse to leave it
+    ui::TextView("##view", text, lines, state, {.language = SyntaxLanguage::plain, .size = ImVec2(600, 60)});
+  };
+  const auto frame = [&] { windowFrame(draw); };
+  frame();
+  const float lineHeight = std::floor(ui::Fonts::kMonoSize * 1.42F);
+  const float top = ImGui::GetStyle().WindowPadding.y + 40.0F + ImGui::GetStyle().ItemSpacing.y;
+  const auto lineY = [&](float line) { return top + (lineHeight * (line + 0.5F)); };
+  // Pressed on the second line, dragged above the view (scrolls up, selects from the first line), then below it.
+  MouseMove(ImVec2(100, lineY(1)));
+  frame();
+  MouseButton(true);
+  frame();
+  MouseMove(ImVec2(100, 5));
+  frame();
+  EXPECT_EQ(state.selectionCursor, 0U);
+  MouseMove(ImVec2(100, 400));
+  frame();
+  frame();
+  EXPECT_GT(state.selectionCursor, 1U);
+  MouseButton(false);
+  frame();
+  EXPECT_FALSE(state.dragging);
+  // Shift extends the selection from its anchor.
+  ASSERT_EQ(state.selectionAnchor, 1U);
+  MouseMove(ImVec2(100, lineY(0)));
+  frame();
+  ImGui::GetIO().AddKeyEvent(ImGuiMod_Shift, true);
+  clickHere(frame);
+  ImGui::GetIO().AddKeyEvent(ImGuiMod_Shift, false);
+  frame();
+  EXPECT_EQ(state.selectionAnchor, 1U);
+
+  // The context menu of the view, opened over its first line.
+  const auto contextMenu = [&](std::string_view entry) {
+    MouseMove(ImVec2(100, lineY(0)));
+    frame();
+    clickHere(frame, ImGuiMouseButton_Right);
+    return clickItem(entry, frame);
+  };
+  ASSERT_TRUE(contextMenu("Select all"));
+  EXPECT_EQ(state.selectionAnchor, 0U);
+  EXPECT_EQ(state.selectionCursor, lines.size() - 1);
+  ASSERT_TRUE(contextMenu("Copy selected lines"));
+  EXPECT_EQ(std::string_view(ImGui::GetClipboardText()), text);  // every line, the empty last one included
+  ImGui::SetClipboardText("");
+  ASSERT_TRUE(contextMenu("Copy all"));
+  EXPECT_EQ(std::string_view(ImGui::GetClipboardText()), text);
+}
+
+TEST_F(WidgetsTest, TextViewScrollsToAMatchFarRight) {
+  const std::string text = std::string(400, '.') + "needle\nshort\n";
+  LineIndex lines;
+  lines.build(text, SyntaxLanguage::plain);
+  ui::TextViewState state;
+  ui::GoToMatch(state, true);  // no match: nothing to go to
+  EXPECT_FALSE(state.scrollToCurrentMatch);
+  state.query.assign(std::string_view{"needle"});
+  ASSERT_EQ(ui::UpdateMatches(text, state), 1U);
+  ui::GoToMatch(state, true);
+  const auto draw = [&] {
+    ui::TextView("##long", text, lines, state, {.language = SyntaxLanguage::plain, .size = ImVec2(300, 100)});
+  };
+  windowFrame(draw);
+  windowFrame(draw);
+  float scrollX = 0;
+  for (const ImGuiWindow* pWindow : ImGui::GetCurrentContext()->Windows) {
+    if (std::string_view(pWindow->Name).contains("##long")) {
+      scrollX = pWindow->Scroll.x;
+    }
+  }
+  EXPECT_GT(scrollX, 0.0F);
+  EXPECT_FALSE(state.scrollToCurrentMatch);
+}
+
+TEST_F(WidgetsTest, ATextViewOutOfSightDrawsNothing) {
+  const std::string text = "line\n";
+  LineIndex lines;
+  lines.build(text, SyntaxLanguage::plain);
+  ui::TextViewState state;
+  const std::string empty;
+  LineIndex noLines;
+  noLines.build(empty, SyntaxLanguage::plain);
+  for (int idx = 0; idx < 3; ++idx) {
+    windowFrame([&] {
+      ui::TextView("##empty", empty, noLines, state, {.language = SyntaxLanguage::plain, .size = ImVec2(300, 50)});
+      ImGui::SetCursorPosY(5000.0F);
+      ui::TextView("##below", text, lines, state, {.language = SyntaxLanguage::plain, .size = ImVec2(300, 50)});
+    });
+  }
+  EXPECT_GT(LastFrameVertices(), 0);
+}
+
+TEST_F(WidgetsTest, AHelpMarkerExplainsOnHover) {
+  ImRect marker;
+  const auto frame = [&] {
+    windowFrame([&] {
+      ImGui::TextUnformatted("Option");
+      ui::HelpMarker("What the option does");
+      marker = ImRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+    });
+  };
+  frame();
+  MouseMove(marker.GetCenter());
+  for (int idx = 0; idx < 45; ++idx) {
+    frame();
+  }
+  bool tooltip = false;
+  for (const ImGuiWindow* pWindow : ImGui::GetCurrentContext()->Windows) {
+    tooltip |= pWindow->Active && std::string_view(pWindow->Name).contains("##Tooltip");
+  }
+  EXPECT_TRUE(tooltip);
+}
+
+TEST(Widgets, MethodShortNames) {
+  EXPECT_EQ(ui::MethodShortName(Method::get), "GET");
+  EXPECT_EQ(ui::MethodShortName(Method::del), "DEL");
+  EXPECT_EQ(ui::MethodShortName(Method::options), "OPT");
+  EXPECT_EQ(ui::MethodShortName(Method::connect), "CONN");
+}
+
 TEST_F(WidgetsTest, MiscWidgetsRender) {
   Method method = Method::get;
   float size = 200;
@@ -210,7 +338,7 @@ TEST_F(WidgetsTest, MiscWidgetsRender) {
     ui::TextDim("dim");
     ui::HexView("##hex", std::string_view("\x00\x01hello world, binary\xff", 22), ImVec2(600, 100));
     const ImVec2 pos = ImGui::GetCursorScreenPos();
-    for (int icon = 0; icon <= static_cast<int>(ui::Icon::columns); ++icon) {
+    for (int icon = 0; icon <= static_cast<int>(ui::Icon::pawPrints); ++icon) {
       ui::DrawIcon(ImGui::GetWindowDrawList(), static_cast<ui::Icon>(icon),
                    ImVec2(pos.x + (20.0F * static_cast<float>(icon)), pos.y), 16, IM_COL32_WHITE);
     }
@@ -223,6 +351,44 @@ TEST_F(WidgetsTest, MiscWidgetsRender) {
   ui::ApplyTheme(ui::ThemeKind::nuit, 2.0F);
   EXPECT_EQ(ui::CurrentPalette().kind, ui::ThemeKind::nuit);
   EXPECT_FLOAT_EQ(ImGui::GetStyle().FontScaleDpi, 2.0F);
+}
+
+TEST_F(WidgetsTest, ZalieEatsHerMeatStageByStage) {
+  // Row 2 of the sheet: the 4 frames of the eating dog, then the 4 stages of the meat (drawn first, behind her).
+  const auto meal = [&](double seconds, float eaten) {
+    windowFrame([&] { assets.drawMeal(ImGui::GetWindowDrawList(), seconds, eaten, ImVec2(10, 10), 72); });
+    return LastFrameSprites(assets.sprites());
+  };
+  using Frames = std::vector<SpriteFrame>;
+  EXPECT_EQ(meal(0.0, 0.0F), (Frames{{4, 2}, {0, 2}}));
+  EXPECT_EQ(meal(0.1, 0.3F), (Frames{{5, 2}, {1, 2}}));  // 10 frames per second
+  EXPECT_EQ(meal(0.25, 0.6F), (Frames{{6, 2}, {2, 2}}));
+  EXPECT_EQ(meal(0.35, 0.99F), (Frames{{7, 2}, {3, 2}}));
+  EXPECT_EQ(meal(0.4, 1.0F), (Frames{{7, 2}, {0, 2}}));  // a bare bone, and the cycle starts again
+  EXPECT_EQ(meal(0.0, -1.0F), (Frames{{4, 2}, {0, 2}}));
+
+  // The meat gives a little under the bite (frame 1 of the dog), not otherwise.
+  const auto meatTop = [&](double seconds) {
+    windowFrame([&] { assets.drawMeal(ImGui::GetWindowDrawList(), seconds, 0.0F, ImVec2(10, 10), 72); });
+    // The first sprite drawn is the meat: the first vertex of its quad is its top left corner.
+    for (const ImDrawList* pDrawList : ImGui::GetDrawData()->CmdLists) {
+      for (const ImDrawCmd& cmd : pDrawList->CmdBuffer) {
+        if (cmd.TexRef._TexData == assets.sprites()._TexData) {
+          return pDrawList
+              ->VtxBuffer[static_cast<int>(cmd.VtxOffset + pDrawList->IdxBuffer[static_cast<int>(cmd.IdxOffset)])]
+              .pos.y;
+        }
+      }
+    }
+    return FLT_MAX;
+  };
+  EXPECT_FLOAT_EQ(meatTop(0.0), 10.0F);
+  EXPECT_FLOAT_EQ(meatTop(0.1), 11.0F);
+
+  windowFrame([&] { assets.drawSprite(ImGui::GetWindowDrawList(), ui::Animation::eat, 0.25, ImVec2(10, 10), 72); });
+  EXPECT_EQ(LastFrameSprites(assets.sprites()), (Frames{{2, 2}}));
+  windowFrame([&] { assets.drawSprite(ImGui::GetWindowDrawList(), ui::Animation::sleep, 0.5, ImVec2(10, 10), 72); });
+  EXPECT_EQ(LastFrameSprites(assets.sprites()), (Frames{{1, 1}}));
 }
 
 TEST_F(WidgetsTest, TexturesAreReleasedOnceDestroyed) {
@@ -262,6 +428,7 @@ TEST(ChartFormatting, Units) {
   EXPECT_EQ(ui::FormatChartValue(ChartUnit::bytes, 512, buffer), "512 B");
   EXPECT_EQ(ui::FormatChartValue(ChartUnit::bytes, 1536, buffer), "1.5 KB");
   EXPECT_EQ(ui::FormatChartValue(ChartUnit::bytes, 3.0 * 1024 * 1024, buffer), "3 MB");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::bytes, 2.0 * 1024 * 1024 * 1024, buffer), "2 GB");
   EXPECT_EQ(ui::FormatChartValue(ChartUnit::seconds, 30, buffer), "30 s");
   EXPECT_EQ(ui::FormatChartValue(ChartUnit::seconds, 120, buffer), "2 min");
   EXPECT_EQ(ui::FormatChartValue(ChartUnit::seconds, 150, buffer), "2:30");
@@ -401,6 +568,54 @@ TEST_F(ChartTest, MorePointsThanPixelsAreReducedOncePerChange) {
   state.invalidate();
   draw(options);
   EXPECT_GT(state.points[0], 0.0F);  // the mean x of the first pixel column
+}
+
+TEST_F(ChartTest, TheTooltipFollowsTheStyleAndTheHiddenSeries) {
+  // Stacked areas: a total under the values, "-" for the missing value in the middle.
+  const ui::ChartOptions stacked{.height = 200, .style = ui::ChartStyle::stackedAreas};
+  draw(stacked);
+  MouseMove(ImVec2((rectMin.x + rectMax.x) * 0.5F, (rectMin.y + rectMax.y) * 0.5F));
+  draw(stacked);
+  draw(stacked);
+  EXPECT_TRUE(TooltipShown());
+  // A hidden series is neither drawn nor listed.
+  click(ImVec2(rectMax.x - 4.0F, rectMin.y + 4.0F), stacked);
+  ASSERT_TRUE(state.isHidden(1));
+  MouseMove(ImVec2((rectMin.x + rectMax.x) * 0.5F, (rectMin.y + rectMax.y) * 0.5F));
+  draw(stacked);
+  draw(stacked);
+  EXPECT_TRUE(TooltipShown());
+  EXPECT_EQ(LastFrameNonFiniteVertices(), 0);
+
+  // Bars: the tooltip tells the range of the bar.
+  const std::vector<float> edges{0, 10, 20, 30};
+  const std::vector<float> counts{5, 0, 12};
+  const std::vector<float> others{1, 2, 3};
+  const std::array bars{ui::ChartSeries{.name = "count", .values = counts, .color = IM_COL32_WHITE},
+                        ui::ChartSeries{.name = "other", .values = others, .color = IM_COL32_BLACK}};
+  ui::ChartState barsState;
+  ImVec2 min;
+  ImVec2 max;
+  const auto drawBars = [&] {
+    windowFrame([&] {
+      ui::Chart("##bars", edges, bars, barsState, {.height = 200, .style = ui::ChartStyle::bars});
+      min = ImGui::GetItemRectMin();
+      max = ImGui::GetItemRectMax();
+    });
+  };
+  drawBars();
+  MouseMove(ImVec2(max.x - 4.0F, min.y + 4.0F));  // the legend of the last series
+  drawBars();
+  MouseButton(true);
+  drawBars();
+  MouseButton(false);
+  drawBars();
+  ASSERT_TRUE(barsState.isHidden(1));
+  MouseMove(ImVec2((min.x * 0.3F) + (max.x * 0.7F), (min.y + max.y) * 0.5F));
+  drawBars();
+  drawBars();
+  EXPECT_TRUE(TooltipShown());
+  EXPECT_EQ(LastFrameNonFiniteVertices(), 0);
 }
 
 TEST_F(ChartTest, LegendHoverAndZoom) {

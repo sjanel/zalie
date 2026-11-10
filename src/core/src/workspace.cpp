@@ -135,9 +135,8 @@ fs::path Workspace::newCollectionPath(std::string_view name) const {
   for (int suffix = 2; fs::exists(path, errc); ++suffix) {
     std::string_view stem = fileName;
     stem.remove_suffix(std::string_view{".zalie.json"}.size());
-    RawChars32 numbered = Concat({stem, "-"});
-    AppendInt(numbered, suffix);
-    numbered.append(std::string_view{".zalie.json"});
+    RawChars32 numbered;
+    AppendAll(numbered, stem, '-', suffix, ".zalie.json");
     path = dir / PathFromUtf8(numbered);
   }
   return path;

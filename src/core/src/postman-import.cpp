@@ -68,7 +68,7 @@ void ReadKeyValues(const Json* pArray, KeyValues& out) {
     const Json* pValue = Child(item, "value");
     RawChars32 value;
     if (pValue != nullptr && pValue->is_number()) {
-      AppendInt(value, static_cast<long long>(pValue->get<double>()));
+      AppendAll(value, static_cast<std::int64_t>(pValue->get<double>()));
     } else if (pValue != nullptr && pValue->is_boolean()) {
       value.assign(pValue->get<bool>() ? std::string_view{"true"} : std::string_view{"false"});
     } else {
@@ -144,9 +144,9 @@ void ReadBody(const Json* pBody, Request& req, StringList& warnings) {
     const KeyValue* pContentType = FindEnabled(req.headers, "Content-Type", true);
     const std::string_view contentType =
         pContentType == nullptr ? std::string_view{} : std::string_view{pContentType->value};
-    if (language == "json" || FindIgnoreCase(contentType, "json") != std::string_view::npos) {
+    if (language == "json" || ContainsIgnoreCase(contentType, "json")) {
       req.bodyMode = BodyMode::json;
-    } else if (language == "xml" || FindIgnoreCase(contentType, "xml") != std::string_view::npos) {
+    } else if (language == "xml" || ContainsIgnoreCase(contentType, "xml")) {
       req.bodyMode = BodyMode::xml;
     } else {
       req.bodyMode = BodyMode::text;

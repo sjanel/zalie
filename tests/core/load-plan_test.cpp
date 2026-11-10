@@ -283,14 +283,58 @@ TEST_F(LoadPlanTest, VaryingAParameterWithoutValue) {
   EXPECT_EQ(filled().url, "http://example.com/items?flag=on&x=1");
 }
 
-TEST_F(LoadPlanTest, VaryingAnUnknownQueryParameterIsAnIssue) {
-  LoadParameter parameter = ListParameter("nope", "1");
-  parameter.queryParameter = true;
-  _settings.parameters.push_back(std::move(parameter));
+TEST_F(LoadPlanTest, AQueryParameterTheRequestDoesNotHaveIsAppendedForTheRun) {
+  LoadParameter added = ListParameter("new key", "1\n2");
+  added.queryParameter = true;
+  _settings.parameters.push_back(std::move(added));
+  EXPECT_EQ(filled(0).url, "http://example.com/items?new%20key=1");
+  EXPECT_EQ(filled(1).url, "http://example.com/items?new%20key=2");
+
+  _request.url.assign(std::string_view{"http://example.com/items?a=1#top"});
+  EXPECT_EQ(filled(0).url, "http://example.com/items?a=1&new%20key=1#top");
+  _request.url.assign(std::string_view{"http://example.com/items?a=1&"});
+  EXPECT_EQ(filled(0).url, "http://example.com/items?a=1&new%20key=1");
+  _request.url.assign(std::string_view{"http://example.com/items?"});
+  EXPECT_EQ(filled(0).url, "http://example.com/items?new%20key=1");
+
+  // A fixed value, inlined like the value of a variable.
+  _settings.parameters.clear();
+  LoadParameter fixed = FixedParameter("lang", "en");
+  fixed.queryParameter = true;
+  _settings.parameters.push_back(std::move(fixed));
+  EXPECT_EQ(filled().url, "http://example.com/items?lang=en");
+}
+
+TEST_F(LoadPlanTest, AnOmittedQueryParameterIsLeftOutOfTheRun) {
+  _request.url.assign(std::string_view{"http://example.com/items?a=1&q=x&b=2&q=y#top"});
+  LoadParameter omitted;
+  omitted.name.assign(std::string_view{"q"});
+  omitted.queryParameter = true;
+  omitted.source = ValueSource::omitted;
+  _settings.parameters.push_back(omitted);
+  EXPECT_EQ(filled().url, "http://example.com/items?a=1&b=2#top");
+  EXPECT_EQ(View(_request.url), "http://example.com/items?a=1&q=x&b=2&q=y#top");  // the request does not change
+
+  // The '?' of an empty query goes too, the fragment stays even when empty.
+  _request.url.assign(std::string_view{"http://example.com/items?q=1&&q#"});
+  EXPECT_EQ(filled().url, "http://example.com/items#");
+  // Without the parameter, nothing changes.
+  _request.url.assign(std::string_view{"http://example.com/items?a=1"});
+  EXPECT_EQ(filled().url, "http://example.com/items?a=1");
+  _request.url.assign(std::string_view{"http://example.com/items"});
+  EXPECT_EQ(filled().url, "http://example.com/items");
+}
+
+TEST_F(LoadPlanTest, OnlyAQueryParameterCanBeOmitted) {
+  _request.url.assign(std::string_view{"http://example.com/{{page}}"});
+  LoadParameter omitted;
+  omitted.name.assign(std::string_view{"page"});
+  omitted.source = ValueSource::omitted;
+  _settings.parameters.push_back(omitted);
   const LoadPlan plan = compile();
   ASSERT_FALSE(plan.valid());
   EXPECT_EQ(plan.issues()[0].parameter, 0U);
-  EXPECT_TRUE(View(plan.issues()[0].message).contains("nope"));
+  EXPECT_EQ(View(plan.issues()[0].message), "Only a query parameter can be left out");
 }
 
 TEST_F(LoadPlanTest, AFixedParameterBehavesLikeAVariableOfANormalFetch) {

@@ -72,8 +72,7 @@ bool LooksSecret(std::string_view name) noexcept {
                                            std::string_view{"password"}, std::string_view{"passwd"},
                                            std::string_view{"apikey"},   std::string_view{"api_key"},
                                            std::string_view{"key"},      std::string_view{"credential"}};
-  return std::ranges::any_of(
-      kSecretWords, [name](std::string_view word) { return FindIgnoreCase(name, word) != std::string_view::npos; });
+  return std::ranges::any_of(kSecretWords, [name](std::string_view word) { return ContainsIgnoreCase(name, word); });
 }
 
 void CollectRefs(std::string_view text, amc::vector<std::string_view>& names) {

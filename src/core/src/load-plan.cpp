@@ -1,6 +1,6 @@
 #include "zalie/load-plan.hpp"
 
-#include <aeronet/base64.hpp>
+#include <aeronet/string-equal-ignore-case.hpp>
 #include <algorithm>
 #include <amc/vector.hpp>
 #include <charconv>
@@ -18,6 +18,7 @@
 #include "http-client-setup.hpp"
 #include "zalie/collection.hpp"
 #include "zalie/data-file.hpp"
+#include "zalie/encoding.hpp"
 #include "zalie/key-value.hpp"
 #include "zalie/load-settings.hpp"
 #include "zalie/raw-chars.hpp"
@@ -51,46 +52,9 @@ constexpr std::string_view kUnreadableRow = "a row of the data file cannot be re
   return seed != 0 ? seed : 1;
 }
 
-void AppendJsonEscaped(std::string_view value, RawChars32& out) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  for (char ch : value) {
-    switch (ch) {
-      case '"':
-        out.append(std::string_view{"\\\""});
-        break;
-      case '\\':
-        out.append(std::string_view{"\\\\"});
-        break;
-      case '\n':
-        out.append(std::string_view{"\\n"});
-        break;
-      case '\r':
-        out.append(std::string_view{"\\r"});
-        break;
-      case '\t':
-        out.append(std::string_view{"\\t"});
-        break;
-      default:
-        if (static_cast<unsigned char>(ch) < 0x20U) {
-          const auto code = static_cast<unsigned char>(ch);
-          out.append(std::string_view{"\\u00"});
-          out.push_back(kHex[code >> 4U]);
-          out.push_back(kHex[code & 0xFU]);
-        } else {
-          out.push_back(ch);
-        }
-        break;
-    }
-  }
-}
-
+// Appends "Basic <base64(credentials)>".
 void AppendBasicValue(std::string_view credentials, RawChars32& out) {
-  const std::size_t encodedLen = aeronet::B64EncodedLen(credentials.size());
-  out.ensureAvailableCapacityExponential(kBasicPrefix.size() + encodedLen);
-  out.unchecked_append(kBasicPrefix);
-  char* pEncoded = out.data() + out.size();
-  aeronet::B64Encode(credentials, pEncoded, pEncoded + encodedLen);
-  out.setEnd(pEncoded + encodedLen);
+  AppendAll(out, kBasicPrefix, Base64(credentials));
 }
 
 // A value bound to a sentinel while the request is resolved.
@@ -170,6 +134,44 @@ class TemplateSplitter {
   return false;
 }
 
+// Removes from 'url' every query parameter 'key', and the '?' of a query left empty.
+void RemoveQueryParameter(RawChars32& url, std::string_view key) {
+  const UrlQuerySplit split = SplitUrlQuery(url);
+  RawChars32 rebuilt(url.size());
+  AppendAll(rebuilt, split.base);
+  char separator = '?';
+  std::string_view rest = split.query;
+  while (!rest.empty()) {
+    const std::size_t ampPos = rest.find('&');
+    const std::string_view pair = rest.substr(0, ampPos);
+    if (!pair.empty() && pair.substr(0, pair.find('=')) != key) {
+      AppendAll(rebuilt, separator, pair);
+      separator = '&';
+    }
+    rest = ampPos == std::string_view::npos ? std::string_view{} : rest.substr(ampPos + 1);
+  }
+  if (View(url).contains('#')) {
+    AppendAll(rebuilt, '#', split.fragment);
+  }
+  url.swap(rebuilt);
+}
+
+// Appends the query parameter 'key' (encoded), 'reference' as value, to 'url', before its fragment.
+void AppendQueryParameter(RawChars32& url, std::string_view key, std::string_view reference) {
+  const UrlQuerySplit split = SplitUrlQuery(url);
+  RawChars32 rebuilt(url.size() + (key.size() * 3) + reference.size() + 2);
+  AppendAll(rebuilt, split.base, '?', split.query);
+  if (!split.query.empty() && !split.query.ends_with('&')) {
+    rebuilt.push_back('&');
+  }
+  AppendUrlEncoded(key, rebuilt);
+  AppendAll(rebuilt, '=', reference);
+  if (View(url).contains('#')) {
+    AppendAll(rebuilt, '#', split.fragment);
+  }
+  url.swap(rebuilt);
+}
+
 // Whether 'name' changes from a request to the next. The environment variables are constant during a run.
 [[nodiscard]] bool VariesPerRequest(std::string_view name) noexcept {
   return IsDynamicVariable(name) && !name.starts_with("$env.") && !name.starts_with("process.env.");
@@ -227,7 +229,7 @@ bool TextTemplate::appendTo(std::span<const std::string_view> values, RawChars32
         AppendUrlEncoded(value, out, true);
         break;
       case SlotEncoding::jsonString:
-        AppendJsonEscaped(value, out);
+        AppendAll(out, Escaped(value, kJsonEscapes));
         break;
     }
   }
@@ -249,9 +251,8 @@ LoadPlan::LoadPlan(const Request& request, const Collection& collection, const V
   StringPool scopeStrings;
   amc::vector<SlotBinding> bindings;
   const auto newSentinel = [&](SlotBinding binding) {
-    RawChars32 sentinel(prefix);
-    AppendInt(sentinel, bindings.size());
-    sentinel.push_back(kSentinelSeparator);
+    RawChars32 sentinel;
+    AppendAll(sentinel, prefix, bindings.size(), kSentinelSeparator);
     bindings.push_back(binding);
     return scopeStrings.store(sentinel);
   };
@@ -269,12 +270,17 @@ LoadPlan::LoadPlan(const Request& request, const Collection& collection, const V
       continue;
     }
     if (parameter.queryParameter) {
-      RawChars32 varyName(std::string_view{"$vary."});
-      AppendInt(varyName, idx);
-      name = scopeStrings.store(varyName);
-      if (!ReplaceQueryValue(url, key, scopeStrings.concat({"{{", name, "}}"}))) {
-        _issues.push_back({.message = Concat({"No query parameter '", key, "'"}), .parameter = idx});
+      if (parameter.source == ValueSource::omitted) {
+        RemoveQueryParameter(url, key);
         continue;
+      }
+      RawChars32 varyName;
+      AppendAll(varyName, "$vary.", idx);
+      name = scopeStrings.store(varyName);
+      const std::string_view reference = scopeStrings.concat({"{{", name, "}}"});
+      if (!ReplaceQueryValue(url, key, reference)) {
+        // Added for the run: the request does not have it.
+        AppendQueryParameter(url, key, reference);
       }
     }
     if (parameter.source == ValueSource::fixed) {
@@ -402,7 +408,7 @@ void LoadPlan::compileHeaders(std::string_view sentinelPrefix, std::string_view 
       _issues.push_back({.message = RawChars32(std::string_view{"A generated value cannot be the name of a header"})});
       continue;
     }
-    const bool isBasicAuth = !basicCredentials.empty() && EqualsIgnoreCase(header.name, kAuthorization) &&
+    const bool isBasicAuth = !basicCredentials.empty() && aeronet::CaseInsensitiveEqual(header.name, kAuthorization) &&
                              header.value == View(expectedBasic);
     const HeaderUse use = ClassifyHeader(header.name, header.value, lowerName);
     if (use == HeaderUse::invalid || use == HeaderUse::managedByClient) {

@@ -168,6 +168,51 @@ TEST(BrunoImport, FolderLevelOverridesAreReported) {
   EXPECT_TRUE(imported->warnings[0].contains("folder level")) << imported->warnings[0];
 }
 
+TEST(BrunoImport, UnusualFilesAndBodies) {
+  const test::TempDir dir;
+  const std::filesystem::path root = dir.path() / "My API";
+  // A name that cannot be decoded: the collection is named after its directory.
+  ASSERT_TRUE(WriteFileAtomically(root / "bruno.json", R"({"name": "bad \uZZZZ"})"));
+  ASSERT_TRUE(WriteFileAtomically(root / "collection.bru", "auth {\n  mode: inherit\n}\n\nscript:pre-request {\n}\n"));
+  ASSERT_TRUE(WriteFileAtomically(root / "f" / "folder.bru", "auth:bearer {\n  token: t\n}\n"));
+  // Windows line endings, no newline at the end, no name, an XML body, a key without value.
+  ASSERT_TRUE(WriteFileAtomically(root / "Xml.bru",
+                                  "post {\r\n  url: http://h/x\r\n  body: xml\r\n}\r\n\r\nheaders {\r\n\r\n"
+                                  "  X-Flag\r\n}\r\n\r\nbody:xml {\r\n  <a/>\r\n}"));
+  ASSERT_TRUE(WriteFileAtomically(root / "Form.bru",
+                                  "post {\n  url: http://h/f\n  body: multipartForm\n}\n\nbody:multipart-form {\n"
+                                  "  name: zalie\n}\n"));
+  // Files that cannot be read: links to nothing.
+  std::error_code errc;
+  std::filesystem::create_symlink(dir.path() / "nothing", root / "Broken.bru", errc);
+  const bool links = !errc;
+  if (links) {
+    std::filesystem::create_directories(root / "environments");
+    std::filesystem::create_symlink(dir.path() / "nothing", root / "environments" / "local.bru", errc);
+  }
+
+  auto imported = ImportBrunoCollection(root);
+  ASSERT_TRUE(imported.has_value()) << View(imported.error());
+  const Collection& collection = imported->collection;
+  EXPECT_EQ(View(collection.name), "My API");
+  EXPECT_EQ(collection.auth.mode, AuthMode::none);
+  ASSERT_EQ(collection.root.requests.size(), 2U);
+  const Request& form = collection.root.requests[0];
+  EXPECT_EQ(View(form.name), "Form");
+  EXPECT_EQ(form.bodyMode, BodyMode::formUrlEncoded);
+  ASSERT_EQ(form.form.size(), 1U);
+  EXPECT_EQ(View(form.form[0].value), "zalie");
+  const Request& xml = collection.root.requests[1];
+  EXPECT_EQ(View(xml.name), "Xml");
+  EXPECT_EQ(xml.bodyMode, BodyMode::xml);
+  EXPECT_EQ(View(xml.body), "<a/>");
+  ASSERT_EQ(xml.headers.size(), 1U);
+  EXPECT_EQ(View(xml.headers[0].key), "X-Flag");
+  EXPECT_TRUE(xml.headers[0].value.empty());
+  // Scripts, the folder level authentication, and the files that could not be read.
+  EXPECT_EQ(imported->warnings.size(), links ? 4U : 2U);
+}
+
 TEST(BrunoImport, SingleRequestFile) {
   auto request = ImportBruRequestFile(CollectionDir() / "users" / "Create user.bru");
   ASSERT_TRUE(request.has_value()) << View(request.error());

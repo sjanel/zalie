@@ -159,6 +159,7 @@ class App {
   void toast(std::string_view message, bool error = false);
   [[nodiscard]] Workspace& workspace() noexcept { return _workspace; }
   [[nodiscard]] PlanCompiler& planCompiler() noexcept { return _planCompiler; }
+  [[nodiscard]] const Assets& assets() const noexcept { return _assets; }
   // Location of the active request ("Collection / Folder / "), as shown above the URL bar.
   [[nodiscard]] std::string_view breadcrumb() const noexcept { return _breadcrumb; }
   // Opens a dialog at the next frame ('collectionIndex': collection of the collection settings dialog).
@@ -210,10 +211,11 @@ class App {
   void drawPerfSettings(RequestTab& tab, Request& request);
   void drawPerfPlan(RequestTab& tab, const Request& request);
   void drawPerfParameters(RequestTab& tab, Request& request);
+  void drawPerfAddQuery(RequestTab& tab, Request& request);
   void drawPerfRowEditor(RequestTab& tab, Request& request);
   void drawPerfDialogs(RequestTab& tab, const Request& request);
   void drawPerfDashboard(PerfTab& perf);
-  void drawPerfTables(PerfTab& perf);
+  static void DrawPerfTables(PerfTab& perf);
   void stopRunner(std::unique_ptr<LoadRunner> runner);
   [[nodiscard]] std::filesystem::path dataBaseDirectory(const RequestTab& tab);
 

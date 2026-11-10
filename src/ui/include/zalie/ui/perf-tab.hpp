@@ -145,6 +145,8 @@ struct PerfTab {
   // The run needs a confirmation (other host than the local machine, or a method that may change the server).
   bool confirmRequested{false};
   bool logLatency{false};
+  // A query parameter was just added: its name field takes the keyboard.
+  bool focusAddedName{false};
 };
 
 }  // namespace zalie::ui

@@ -219,6 +219,49 @@ TEST_F(DataFileTest, JsonLinesMalformedAndIncompleteRows) {
   EXPECT_EQ(reader.value(1), "6");
 }
 
+TEST_F(DataFileTest, JsonLinesUndecodableKeysAndValuesAreMalformed) {
+  const auto pIndex = indexOf(R"({"a":1}
+{"a":"\uZZZZ"}
+{"\uZZZZ":1,"a":2}
+{"a":3,"extra":4}
+)",
+                              DataFileFormat::jsonLines);
+  EXPECT_EQ(pIndex->nbRows(), 4U);
+  EXPECT_EQ(pIndex->firstMalformedLine(), 2U);
+  DataFileReader reader(*pIndex);
+  EXPECT_FALSE(reader.read(1));
+  EXPECT_FALSE(reader.read(2));
+  ASSERT_TRUE(reader.read(3));  // a key that is not a column is ignored
+  EXPECT_EQ(reader.value(0), "3");
+  // The columns come from the keys of the first line: they must be readable.
+  const DataFileIndex badKey(write(R"({"\uZZZZ":1})"
+                                   "\n",
+                                   "bad-key"),
+                             DataFileFormat::jsonLines);
+  EXPECT_FALSE(badKey.valid());
+}
+
+TEST_F(DataFileTest, CsvMalformedHeaderIsRefused) {
+  const DataFileIndex index(write("\"a\"x,b\n1,2\n"), DataFileFormat::csv);
+  EXPECT_FALSE(index.valid());
+  EXPECT_TRUE(index.error().starts_with("Malformed header")) << index.error();
+}
+
+TEST_F(DataFileTest, ADirectoryIsNotADataFile) {
+  const DataFileIndex index(_directory, DataFileFormat::text);
+  EXPECT_FALSE(index.valid());
+  EXPECT_TRUE(index.error().starts_with("Cannot")) << index.error();
+}
+
+TEST_F(DataFileTest, AReaderOfADeletedFileReportsIt) {
+  const std::filesystem::path path = write("alpha\nbeta\n");
+  const auto pIndex = std::make_shared<const DataFileIndex>(path, DataFileFormat::text);
+  ASSERT_TRUE(pIndex->valid());
+  std::filesystem::remove(path);
+  DataFileReader reader(*pIndex);
+  EXPECT_TRUE(reader.error().starts_with("Cannot open")) << reader.error();
+}
+
 TEST_F(DataFileTest, JsonLinesFirstLineMustBeAnObject) {
   const DataFileIndex index(write("[1,2]\n"), DataFileFormat::jsonLines);
   EXPECT_FALSE(index.valid());

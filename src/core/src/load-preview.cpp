@@ -137,8 +137,11 @@ void ListLoadRows(const Request& request, const Collection& collection, const Va
     if (it != rows.end()) {
       it->parameter = idx;
     } else {
-      rows.push_back(
-          {.name = RawChars32(name), .parameter = idx, .queryParameter = parameter.queryParameter, .unused = true});
+      rows.push_back({.name = RawChars32(name),
+                      .parameter = idx,
+                      .queryParameter = parameter.queryParameter,
+                      .unused = !parameter.queryParameter,
+                      .added = parameter.queryParameter});
     }
   }
 }

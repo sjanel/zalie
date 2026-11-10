@@ -3,7 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstdlib>
 #include <filesystem>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -115,6 +118,96 @@ TEST_F(DesktopEntryTest, WindowsSeparatorsAreEscaped) {
   EXPECT_TRUE(View(content).contains("\nExec=\"C:\\\\\\\\z\\\\\\\\zalie\" %F\n")) << View(content);
   EXPECT_TRUE(View(content).contains("\nIcon=C:\\\\i.png\n"));
   EXPECT_TRUE(View(content).contains("\nX-Zalie-Executable=C:\\\\z\\\\zalie\n"));
+}
+
+TEST_F(DesktopEntryTest, TheRecordedExecutableIsUnescaped) {
+#ifdef _WIN32
+  GTEST_SKIP() << "a tab cannot be in a Windows file name";
+#else
+  exe = tmp.path() / "tab\there" / "zalie";
+  Touch(exe);
+  ASSERT_TRUE(EnsureDesktopEntry(dirs, exe, kPng).has_value());
+  EXPECT_TRUE(std::string_view(entry()).contains("tab\\there"));  // escaped in the entry
+  const fs::path other = tmp.path() / "other" / "zalie";
+  Touch(other);
+  auto status = EnsureDesktopEntry(dirs, other, kPng);
+  ASSERT_TRUE(status.has_value());
+  EXPECT_EQ(*status, DesktopEntryStatus::upToDate);  // the recorded one, read back, still exists
+#endif
+}
+
+TEST_F(DesktopEntryTest, AGeneratedEntryWithoutItsExecutableIsUpdated) {
+  ASSERT_TRUE(WriteFileAtomically(userEntry(), "[Desktop Entry]\nX-Zalie-Generated=true\n").has_value());
+  auto status = EnsureDesktopEntry(dirs, exe, kPng);
+  ASSERT_TRUE(status.has_value());
+  EXPECT_EQ(*status, DesktopEntryStatus::updated);
+  EXPECT_EQ(std::string_view(entry()), View(MakeDesktopEntry(exe, icon())));
+}
+
+TEST_F(DesktopEntryTest, WriteFailuresAreReported) {
+  // The directory of the icon is a file.
+  Touch(dirs.dataHome / "icons");
+  EXPECT_FALSE(EnsureDesktopEntry(dirs, exe, kPng).has_value());
+  fs::remove(dirs.dataHome / "icons");
+  // The directory of the entry is a file.
+  Touch(dirs.dataHome / "applications");
+  EXPECT_FALSE(EnsureDesktopEntry(dirs, exe, kPng).has_value());
+}
+
+// Sets (or removes, with nullptr) an environment variable for the life of the object.
+class ScopedEnvironmentVariable {
+ public:
+  ScopedEnvironmentVariable(const char* name, const char* value) : _name(name) {
+    if (const char* pOld = std::getenv(name); pOld != nullptr) {  // NOLINT(concurrency-mt-unsafe)
+      _old = pOld;
+    }
+    Set(name, value);
+  }
+
+  ScopedEnvironmentVariable(const ScopedEnvironmentVariable&) = delete;
+  ScopedEnvironmentVariable& operator=(const ScopedEnvironmentVariable&) = delete;
+
+  ~ScopedEnvironmentVariable() { Set(_name, _old ? _old->c_str() : nullptr); }
+
+ private:
+  static void Set(const char* name, const char* value) {
+#ifdef _WIN32
+    _putenv_s(name, value == nullptr ? "" : value);
+#else
+    if (value == nullptr) {
+      unsetenv(name);  // NOLINT(concurrency-mt-unsafe)
+    } else {
+      setenv(name, value, 1);  // NOLINT(concurrency-mt-unsafe)
+    }
+#endif
+  }
+
+  const char* _name;
+  std::optional<std::string> _old;
+};
+
+TEST(XdgDataDirs, FromTheEnvironment) {
+#ifdef _WIN32
+  GTEST_SKIP() << "the XDG directories are absolute POSIX paths";
+#else
+  // A relative $XDG_DATA_HOME is ignored: ~/.local/share. Relative and duplicate data directories are dropped.
+  const ScopedEnvironmentVariable home("HOME", "/home/zalie");
+  const ScopedEnvironmentVariable dataHome("XDG_DATA_HOME", "relative");
+  std::optional<ScopedEnvironmentVariable> dataDirs;
+  dataDirs.emplace("XDG_DATA_DIRS", "/opt/share::relative:/home/zalie/.local/share");
+  XdgDataDirs dirs = XdgDataDirsFromEnvironment();
+  EXPECT_EQ(dirs.dataHome, fs::path("/home/zalie/.local/share"));
+  ASSERT_EQ(dirs.dataDirs.size(), 1U);
+  EXPECT_EQ(dirs.dataDirs[0], fs::path("/opt/share"));
+  // Absolute $XDG_DATA_HOME, default $XDG_DATA_DIRS.
+  const ScopedEnvironmentVariable absoluteHome("XDG_DATA_HOME", "/data");
+  dataDirs.reset();
+  const ScopedEnvironmentVariable noDataDirs("XDG_DATA_DIRS", nullptr);
+  dirs = XdgDataDirsFromEnvironment();
+  EXPECT_EQ(dirs.dataHome, fs::path("/data"));
+  ASSERT_EQ(dirs.dataDirs.size(), 2U);
+  EXPECT_EQ(dirs.dataDirs[1], fs::path("/usr/share"));
+#endif
 }
 
 TEST_F(DesktopEntryTest, NoUserDataDirectory) {

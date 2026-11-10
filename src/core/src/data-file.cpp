@@ -14,6 +14,7 @@
 #include <string_view>
 
 #include "json-scan.hpp"
+#include "zalie/encoding.hpp"
 #include "zalie/file-io.hpp"
 #include "zalie/load-settings.hpp"
 #include "zalie/raw-chars.hpp"
@@ -127,7 +128,7 @@ struct RowEnd {
       return true;
     }
     const auto begin = decoded.size();
-    if (!AppendUnescaped(inner, decoded)) {
+    if (!AppendJsonUnescaped(inner, decoded)) {
       return false;
     }
     out = std::string_view(decoded).substr(begin);
@@ -144,7 +145,7 @@ struct RowEnd {
     return true;
   }
   scratch.clear();
-  if (!AppendUnescaped(rawKey, scratch)) {
+  if (!AppendJsonUnescaped(rawKey, scratch)) {
     return false;
   }
   out = scratch;

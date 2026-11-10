@@ -71,6 +71,7 @@ class LoadRunnerTest : public ::testing::Test {
         _capturedBody = std::string(req.body());
         _capturedHeader = std::string(req.headerValueOrEmpty("x-custom"));
         _capturedContentType = std::string(req.headerValueOrEmpty("content-type"));
+        _capturedUserAgent = std::string(req.headerValueOrEmpty("user-agent"));
       }
       _hits.fetch_add(1, std::memory_order_relaxed);
       return req.makeResponse(200, kBody, "text/plain");
@@ -130,6 +131,7 @@ class LoadRunnerTest : public ::testing::Test {
   std::string _capturedBody;
   std::string _capturedHeader;
   std::string _capturedContentType;
+  std::string _capturedUserAgent;
   std::vector<std::string> _seen;
   std::uint16_t _port{0};
 };
@@ -329,6 +331,7 @@ TEST_F(LoadRunnerTest, SendsTheHeadersAndTheBody) {
   ResolvedRequest request = makeRequest("/capture", Method::post);
   request.headers.push_back({"X-Custom", "yes"});
   request.headers.push_back({"Content-Type", "application/json"});
+  request.headers.push_back({"User-Agent", "load-test"});  // replaces the default one of the client
   request.body.append(std::string_view{R"({"a":1})"});
   const auto snapshot = runToEnd(std::move(request), RequestsOnly(3, 1));
   EXPECT_EQ(snapshot->counts[kClass2xx], 3U);
@@ -336,6 +339,7 @@ TEST_F(LoadRunnerTest, SendsTheHeadersAndTheBody) {
   EXPECT_EQ(_capturedBody, R"({"a":1})");
   EXPECT_EQ(_capturedHeader, "yes");
   EXPECT_EQ(_capturedContentType, "application/json");
+  EXPECT_EQ(_capturedUserAgent, "load-test");
 }
 
 TEST_F(LoadRunnerTest, ReportsTheHeadersThatAreNotSent) {

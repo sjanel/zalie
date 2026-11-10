@@ -96,12 +96,18 @@ TEST(Persistence, LoadSettingsRoundTrip) {
   file.fileFormat = DataFileFormat::jsonLines;
   file.queryParameter = true;
   file.timestampFormat = TimestampFormat::iso8601;
+  LoadParameter omitted;
+  omitted.name.assign(std::string_view{"debug"});
+  omitted.source = ValueSource::omitted;
+  omitted.queryParameter = true;
   settings.parameters.push_back(std::move(list));
   settings.parameters.push_back(std::move(file));
+  settings.parameters.push_back(std::move(omitted));
   collection.root.folders[0].requests[0].load = std::move(settings);
 
   const std::string json = SerializeCollection(collection);
   EXPECT_TRUE(json.contains("\"source\": \"data-file\""));
+  EXPECT_TRUE(json.contains("\"source\": \"omitted\""));
   EXPECT_TRUE(json.contains("\"order\": \"shuffled\""));
   EXPECT_TRUE(json.contains("\"combine\": \"all-combinations\""));
   EXPECT_TRUE(json.contains("\"fileFormat\": \"json-lines\""));

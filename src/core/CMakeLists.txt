@@ -9,6 +9,7 @@ add_library(
   src/curl-import.cpp
   src/data-file.cpp
   src/desktop-entry.cpp
+  src/encoding.cpp
   src/exchange.cpp
   src/executor.cpp
   src/file-io.cpp
@@ -36,8 +37,13 @@ add_library(
 add_library(zalie::core ALIAS zalie_core)
 
 target_include_directories(zalie_core PUBLIC include)
-# aeronet's headers (RawChars, ObjectArrayPool) and amc containers are part of the public API.
-target_link_libraries(zalie_core PUBLIC aeronet::aeronet_client amc::amc PRIVATE glaze::glaze)
+# aeronet's client, and the internal libraries Zalie builds on directly: aeronet_tech (RawChars, the memory, character
+# and number primitives, ObjectArrayPool), aeronet_objects (HTTP token and header helpers) and aeronet_sys (File). Their
+# headers and the amc containers are part of the public API.
+target_link_libraries(
+  zalie_core
+  PUBLIC aeronet::aeronet_client aeronet_tech aeronet_objects aeronet_sys amc::amc
+  PRIVATE glaze::glaze)
 find_package(Threads REQUIRED)
 target_link_libraries(zalie_core PUBLIC Threads::Threads)
 zalie_set_target_options(zalie_core)

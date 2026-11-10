@@ -39,10 +39,12 @@
 #include "zalie/ui/app.hpp"
 #include "zalie/ui/assets.hpp"
 #include "zalie/ui/chart.hpp"
+#include "zalie/ui/icons.hpp"
 #include "zalie/ui/perf-tab.hpp"
 #include "zalie/ui/theme.hpp"
 #include "zalie/ui/widgets.hpp"
 #include "zalie/url.hpp"
+#include "zalie/value-generators.hpp"
 #include "zalie/variables.hpp"
 #include "zalie/workspace.hpp"
 
@@ -55,9 +57,9 @@ constexpr std::array<std::string_view, kNbLoadClasses> kClassNames{"2xx", "3xx",
 constexpr std::array<std::string_view, kNbLoadErrorKinds> kErrorKindNames{
     "Connection", "TLS", "Timeout", "Closed", "Malformed", "Too large", "Other", "Invalid value"};
 // Indexed by ValueSource.
-constexpr std::array<const char*, 9> kSourceNames{"Fixed value",   "List",       "Integer range",
-                                                  "Decimal range", "Date range", "Random string",
-                                                  "UUID",          "Timestamp",  "Data file"};
+constexpr std::array<const char*, 10> kSourceNames{"Fixed value", "List",          "Integer range", "Decimal range",
+                                                   "Date range",  "Random string", "UUID",          "Timestamp",
+                                                   "Data file",   "Not sent"};
 constexpr std::array<const char*, 3> kOrderNames{"In order", "Random", "Shuffled"};
 constexpr std::array<const char*, 3> kCombineNames{"Independent", "Together", "All combinations"};
 constexpr std::array<const char*, 3> kTimestampNames{"Unix seconds", "Unix milliseconds", "ISO 8601"};
@@ -176,8 +178,31 @@ std::string_view Summary(const LoadParameter& parameter, std::span<char> buffer)
       }
       return FormatTo(buffer, "{}, column {}", fileName, std::string_view(parameter.fileColumn));
     }
+    case ValueSource::omitted:
+      return "not sent during the run";
   }
   return {};
+}
+
+// The saved parameter of 'row', created if it has none: a query parameter starts from the value of the request
+// (already in the collection file), a variable from nothing (its value may be a secret of the environment).
+LoadParameter& MaterializeParameter(Request& request, LoadRow& row) {
+  if (row.parameter == LoadRow::kNoParameter) {
+    LoadParameter parameter;
+    parameter.name = row.name;
+    parameter.queryParameter = row.queryParameter;
+    if (row.queryParameter) {
+      parameter.fixedValue = row.defaultValue;
+      parameter.listValues = row.defaultValue;
+    }
+    EnsureLoad(request).parameters.push_back(std::move(parameter));
+    row.parameter = request.load->parameters.size() - 1;
+  }
+  return request.load->parameters[row.parameter];
+}
+
+[[nodiscard]] std::int64_t NowUnixSeconds() noexcept {
+  return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
 // A framed key number of the dashboard.
@@ -359,10 +384,9 @@ void App::pollRuns() {
     }
   }
   if (!_stoppingRunners.empty()) {
-    _stoppingRunners.erase(
-        std::remove_if(_stoppingRunners.begin(), _stoppingRunners.end(),
-                       [](const auto& pRunner) { return pRunner->snapshot()->phase == LoadPhase::finished; }),
-        _stoppingRunners.end());
+    const auto finished = std::ranges::remove_if(
+        _stoppingRunners, [](const auto& pRunner) { return pRunner->snapshot()->phase == LoadPhase::finished; });
+    _stoppingRunners.erase(finished.begin(), finished.end());
   }
 }
 
@@ -556,9 +580,17 @@ void App::drawPerfHeader(RequestTab& tab, const Request& request) {
   const Palette& pal = CurrentPalette();
   const ImGuiStyle& style = ImGui::GetStyle();
   const float scale = style.FontScaleDpi;
-  const float buttonWidth = 96.0F * scale;
+  const float buttonWidth = 140.0F * scale;
   const float exportWidth = 110.0F * scale;
+  // The Run button stands out: taller than the other items of the row, which are centered on it.
+  const float buttonHeight = std::round(ImGui::GetFrameHeight() * 1.35F);
+  const float rowY = ImGui::GetCursorPosY();
+  const auto buttonLabel = [](Icon icon, std::string_view text, ImU32 color) {
+    ScopedFont font(GetFonts().pUi, Fonts::kUiSize * 1.15F);
+    DrawItemIconLabel(icon, ImGui::GetFontSize() * 1.5F, text, color);
+  };
 
+  ImGui::SetCursorPosY(rowY + std::floor((buttonHeight - ImGui::GetFrameHeight()) * 0.5F));
   ImGui::AlignTextToFramePadding();
   MethodLabel(request.method, false);
   ImGui::SameLine();
@@ -579,22 +611,26 @@ void App::drawPerfHeader(RequestTab& tab, const Request& request) {
       ImGui::SetTooltip("%.*s", static_cast<int>(url.size()), url.data());
     }
   }
+  // SameLine() brings the cursor back to the centered line, the buttons take the whole height.
   ImGui::SameLine();
+  ImGui::SetCursorPosY(rowY);
   if (perf.running()) {
     ImGui::PushStyleColor(ImGuiCol_Button, WithAlpha(pal.danger, 0.15F));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, WithAlpha(pal.danger, 0.3F));
-    ImGui::PushStyleColor(ImGuiCol_Text, pal.danger);
-    if (ImGui::Button("Stop##perfStop", ImVec2(buttonWidth, 0))) {
+    if (ImGui::Button("##perfStop", ImVec2(buttonWidth, buttonHeight))) {
       perf.runner->stop();
     }
-    ImGui::PopStyleColor(3);
+    ImGui::PopStyleColor(2);
+    buttonLabel(Icon::stop, "Stop", pal.danger);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Stop the run (Esc): the requests in flight are not counted");
     }
   } else {
-    if (PrimaryButton(perf.runRequested ? "Preparing...##perfRun" : "Run##perfRun", ImVec2(buttonWidth, 0))) {
+    // "Run", with Zalie's paw prints.
+    if (PrimaryButton("##perfRun", ImVec2(buttonWidth, buttonHeight))) {
       perf.runRequested = true;
     }
+    buttonLabel(Icon::pawPrints, perf.runRequested ? "Preparing..." : "Run", pal.onAccent);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("Run (Ctrl+Enter)");
     }
@@ -767,6 +803,7 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
       importPath(PathFromUtf8(perf.droppedPath));
       perf.droppedPath.clear();
     }
+    drawPerfAddQuery(tab, request);
     return;
   }
   const LoadPreview* pPreview = perf.preview.get();
@@ -775,13 +812,14 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
   bool structural = false;
   static constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
                                             ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings;
-  if (ImGui::BeginTable("##parameters", 6, kFlags)) {
+  if (ImGui::BeginTable("##parameters", 7, kFlags)) {
     ImGui::TableSetupColumn("Parameter", ImGuiTableColumnFlags_WidthFixed, 150.0F * scale);
     ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed, 130.0F * scale);
     ImGui::TableSetupColumn("Values", ImGuiTableColumnFlags_WidthStretch, 1.0F);
     ImGui::TableSetupColumn("Order", ImGuiTableColumnFlags_WidthFixed, 100.0F * scale);
     ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_WidthFixed, 80.0F * scale);
     ImGui::TableSetupColumn("Samples", ImGuiTableColumnFlags_WidthStretch, 1.2F);
+    ImGui::TableSetupColumn("##rowButtons", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFrameHeight());
     ImGui::TableHeadersRow();
     for (std::uint32_t idx = 0; idx < perf.rows.size() && !structural; ++idx) {
       LoadRow& row = perf.rows[idx];
@@ -797,31 +835,58 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
                             ImVec2(0, ImGui::GetFrameHeight()))) {
         perf.selectedRow = idx;
       }
-      if (!perf.droppedPath.empty() && ImGui::IsMouseHoveringRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax())) {
+      // The row spans every column: not clipped by the first one (the window is, by IsWindowHovered).
+      if (!perf.droppedPath.empty() && ImGui::IsWindowHovered() &&
+          ImGui::IsMouseHoveringRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), false)) {
         dropTarget = idx;
       }
+      bool edited = false;
       bool hasIssue = false;
       if (pPreview != nullptr && row.parameter != LoadRow::kNoParameter) {
         hasIssue = std::ranges::any_of(pPreview->plan->issues(),
                                        [&row](const LoadPlanIssue& issue) { return issue.parameter == row.parameter; });
       }
       ImGui::SameLine();
-      ImGui::AlignTextToFramePadding();
-      ImU32 nameColor = pal.text;
-      if (row.unused) {
-        nameColor = pal.textDim;
-      } else if (hasIssue || (row.undefined && pParameter == nullptr)) {
-        nameColor = pal.warning;
-      }
-      TextColored(nameColor, row.name);
-      if (row.queryParameter) {
+      const bool omitted = pParameter != nullptr && pParameter->source == ValueSource::omitted;
+      if (row.added && pParameter != nullptr) {
+        // Added for the run: its key is edited here.
+        if (hasIssue) {
+          ImGui::PushStyleColor(ImGuiCol_Text, pal.warning);
+        }
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("(added)").x - (4.0F * scale));
+        if (perf.focusAddedName && idx == perf.selectedRow) {
+          ImGui::SetKeyboardFocusHere();
+          perf.focusAddedName = false;
+        }
+        edited |= InputText("##name", pParameter->name, 0, "key");
+        if (hasIssue) {
+          ImGui::PopStyleColor();
+        }
         ImGui::SameLine(0, 4.0F * scale);
-        TextDim("(query)");
+        ImGui::AlignTextToFramePadding();
+        TextDim("(added)");
+      } else {
+        ImGui::AlignTextToFramePadding();
+        ImU32 nameColor = pal.text;
+        if (row.unused || omitted) {
+          nameColor = pal.textDim;
+        } else if (hasIssue || (row.undefined && pParameter == nullptr)) {
+          nameColor = pal.warning;
+        }
+        TextColored(nameColor, row.name);
+        if (row.queryParameter) {
+          ImGui::SameLine(0, 4.0F * scale);
+          TextDim("(query)");
+        }
       }
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
         const char* help = "A {{variable}} of the request";
         if (row.unused) {
           help = "Not used by the request any more: choose Default to remove it";
+        } else if (row.added) {
+          help = "A query parameter added for the run only: the request does not have it";
+        } else if (omitted) {
+          help = "A query parameter left out of the run: a normal Fetch keeps sending it";
         } else if (row.queryParameter) {
           help = "A query parameter of the request: varied for the run only, a normal Fetch keeps sending its value";
         }
@@ -833,44 +898,41 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
       ImGui::SetNextItemWidth(-FLT_MIN);
       const char* sourceName =
           pParameter == nullptr ? "Default" : kSourceNames[static_cast<std::size_t>(pParameter->source)];
-      bool edited = false;
-      if (ImGui::BeginCombo("##source", sourceName)) {
-        if (ImGui::Selectable("Default", pParameter == nullptr) && pParameter != nullptr) {
+      // Large: the default height scrolls before the last sources.
+      if (ImGui::BeginCombo("##source", sourceName, ImGuiComboFlags_HeightLarge)) {
+        // An added query parameter has no value in the request to fall back to: removed by its cross.
+        if (!row.added && ImGui::Selectable("Default", pParameter == nullptr) && pParameter != nullptr) {
           request.load->parameters.erase(request.load->parameters.begin() + row.parameter);
           pParameter = nullptr;
           structural = true;
         }
-        if (ImGui::IsItemHovered()) {
+        if (!row.added && ImGui::IsItemHovered()) {
           ImGui::SetTooltip("%s", row.queryParameter ? "The value written in the request"
                                                      : "The value of the environment or of the collection");
         }
         for (std::size_t source = 0; source < kSourceNames.size(); ++source) {
+          if (static_cast<ValueSource>(source) == ValueSource::omitted && (!row.queryParameter || row.added)) {
+            continue;  // only a query parameter of the request can be left out
+          }
           const bool selected = pParameter != nullptr && static_cast<std::size_t>(pParameter->source) == source;
           if (!ImGui::Selectable(kSourceNames[source], selected) || selected) {
             continue;
           }
-          if (pParameter == nullptr) {
-            LoadParameter parameter;
-            parameter.name = row.name;
-            parameter.queryParameter = row.queryParameter;
-            if (row.queryParameter) {
-              // Starts from the value of the request (already in the collection file).
-              parameter.fixedValue = row.defaultValue;
-              parameter.listValues = row.defaultValue;
-            }
-            EnsureLoad(request).parameters.push_back(std::move(parameter));
-            row.parameter = request.load->parameters.size() - 1;
-            pParameter = &request.load->parameters.back();
-            structural = true;
-          }
+          structural |= row.parameter == LoadRow::kNoParameter;
+          pParameter = &MaterializeParameter(request, row);
           pParameter->source = static_cast<ValueSource>(source);
+          // A range starts valid, from what the row sends now when it fits.
+          std::string_view current;
+          if (row.added) {
+            current = pParameter->fixedValue;
+          } else if (row.queryParameter) {
+            current = row.defaultValue;
+          }
+          SeedRange(*pParameter, current, NowUnixSeconds());
           perf.selectedRow = idx;
           edited = true;
         }
         ImGui::EndCombo();
-      }
-      if (structural || edited) {
-        touch(pCollection);
       }
 
       // Values, order, count and samples.
@@ -882,6 +944,8 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
         } else {
           TextDim(row.defaultValue);
         }
+      } else if (pParameter->source == ValueSource::omitted) {
+        TextDim(Summary(*pParameter, buffer));
       } else {
         Text(Summary(*pParameter, buffer));
       }
@@ -898,6 +962,8 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
       ImGui::AlignTextToFramePadding();
       if (pParameter == nullptr) {
         TextDim("1");
+      } else if (pParameter->source == ValueSource::omitted) {
+        TextDim("-");
       } else if (pPreview != nullptr && row.parameter < pPreview->samples.size()) {
         const std::uint64_t count = pPreview->plan->valueCount(row.parameter);
         if (count == 0) {
@@ -916,10 +982,38 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
           TextDim(pPreview->samples[row.parameter]);
         }
       }
+
+      // The cross leaves a query parameter out of the run (removes an added one), the plus sends it again.
+      ImGui::TableSetColumnIndex(6);
+      if (row.queryParameter) {
+        if (pParameter != nullptr && pParameter->source == ValueSource::omitted) {
+          if (IconButton("##restore", Icon::plus, "Send it again during the run") && !structural) {
+            request.load->parameters.erase(request.load->parameters.begin() + row.parameter);
+            pParameter = nullptr;
+            structural = true;
+          }
+        } else if (IconButton("##remove", Icon::close,
+                              row.added ? "Remove it from the run"
+                                        : "Leave it out of the run: a normal Fetch keeps sending it") &&
+                   !structural) {
+          if (row.added) {
+            request.load->parameters.erase(request.load->parameters.begin() + row.parameter);
+          } else {
+            MaterializeParameter(request, row).source = ValueSource::omitted;
+            perf.selectedRow = idx;
+          }
+          pParameter = nullptr;
+          structural = true;
+        }
+      }
+      if (structural || edited) {
+        touch(pCollection);
+      }
       ImGui::PopID();
     }
     ImGui::EndTable();
   }
+  drawPerfAddQuery(tab, request);
 
   // A dropped file: a data file for the row under the mouse, or the selected data file row; a collection otherwise.
   if (!perf.droppedPath.empty() && !structural) {
@@ -937,14 +1031,7 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
       return;
     }
     LoadRow& row = perf.rows[dropTarget];
-    if (row.parameter == LoadRow::kNoParameter) {
-      LoadParameter parameter;
-      parameter.name = row.name;
-      parameter.queryParameter = row.queryParameter;
-      EnsureLoad(request).parameters.push_back(std::move(parameter));
-      row.parameter = request.load->parameters.size() - 1;
-    }
-    LoadParameter& parameter = request.load->parameters[row.parameter];
+    LoadParameter& parameter = MaterializeParameter(request, row);
     parameter.source = ValueSource::dataFile;
     parameter.filePath = DataFilePathFor(dropped, dataBaseDirectory(tab));
     parameter.fileFormat = FormatOfFile(dropped);
@@ -952,6 +1039,31 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
     touch(pCollection);
     toast(Concat({"Data file of '", row.name, "': ", parameter.filePath}));
   }
+}
+
+void App::drawPerfAddQuery(RequestTab& tab, Request& request) {
+  PerfTab& perf = *tab.perf;
+  const Palette& pal = CurrentPalette();
+  const float scale = ImGui::GetStyle().FontScaleDpi;
+  const ImVec2 size(ImGui::CalcTextSize("Query parameter").x + ImGui::GetFrameHeight() + (12.0F * scale),
+                    ImGui::GetFrameHeight());
+  ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(0, 0, 0, 0));
+  const bool clicked = ImGui::Button("##addQuery", size);
+  ImGui::PopStyleColor();
+  DrawItemIconLabel(Icon::plus, ImGui::GetFontSize(), "Query parameter", pal.textDim);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Add a query parameter, sent during the run only: the request does not change");
+  }
+  if (!clicked) {
+    return;
+  }
+  LoadParameter parameter;
+  parameter.queryParameter = true;
+  EnsureLoad(request).parameters.push_back(std::move(parameter));
+  // Its row comes last: the parameters matching none of the request come after the others, in their order.
+  perf.selectedRow = perf.rows.size();
+  perf.focusAddedName = true;
+  touch(collectionOf(tab));
 }
 
 void App::drawPerfRowEditor(RequestTab& tab, Request& request) {
@@ -1087,6 +1199,9 @@ void App::drawPerfRowEditor(RequestTab& tab, Request& request) {
       break;
     case ValueSource::uuid:
       TextDim("A random version 4 UUID for each request, derived from the seed of the run: reproducible.");
+      break;
+    case ValueSource::omitted:
+      TextDim("Left out of the requests of the run. A normal Fetch keeps sending it.");
       break;
     case ValueSource::timestamp:
       InlineLabel("Format");
@@ -1299,35 +1414,69 @@ void App::drawPerfDashboard(PerfTab& perf) {
   std::array<char, 64> value{};
   std::array<char, 64> other{};
 
-  // Phase and progress.
+  // Phase and progress, beside Zalie: she eats her meat as fast as she can while the run goes (the meat follows its
+  // progress), then naps. The banner keeps its height when the run ends, so the dashboard does not move.
   const bool finished = snapshot.phase == LoadPhase::finished;
+  const double duration = perf.runDurationMs / 1000.0;
+  const double warmup = perf.runSettings.warmupMs / 1000.0;
+  const bool bounded = duration > warmup || perf.runMaxRequests != 0;
+  double progress = 0.0;
+  if (duration > warmup) {
+    progress = snapshot.elapsedSeconds / (duration - warmup);
+  }
+  if (perf.runMaxRequests != 0) {
+    progress = std::max(progress, static_cast<double>(snapshot.requests()) / static_cast<double>(perf.runMaxRequests));
+  }
+  progress = std::clamp(progress, 0.0, 1.0);
+  const float bannerHeight = 88.0F * scale;
+  const ImVec2 origin = ImGui::GetCursorScreenPos();
+  {
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - _startTime).count();
+    ImDrawList* pDrawList = ImGui::GetWindowDrawList();
+    if (finished) {
+      _assets.drawSprite(pDrawList, Animation::sleep, seconds, origin, bannerHeight);
+    } else {
+      // Without a limit, a new piece of meat comes every few seconds.
+      static constexpr double kSecondsPerMeal = 8.0;
+      const double eaten = bounded ? progress : std::fmod(snapshot.elapsedSeconds / kSecondsPerMeal, 1.0);
+      _assets.drawMeal(pDrawList, seconds, static_cast<float>(eaten), origin, bannerHeight);
+    }
+  }
+  // The text beside her, centered on her height.
+  const float barHeight = 6.0F * scale;
+  const float textHeight = ImGui::GetFrameHeightWithSpacing() + ImGui::GetTextLineHeight() +
+                           (finished ? 0.0F : style.ItemSpacing.y + barHeight);
+  ImGui::SetCursorScreenPos(ImVec2(origin.x + (bannerHeight * 4.0F / 3.0F) + style.ItemSpacing.x,
+                                   origin.y + std::max(0.0F, std::floor((bannerHeight - textHeight) * 0.5F))));
+  ImGui::BeginGroup();
   static constexpr std::array<std::string_view, 5> kPhases{"Starting", "Warming up", "Running", "Stopping", "Finished"};
   ImGui::AlignTextToFramePadding();
   TextColored(finished ? pal.success : pal.accent, kPhases[static_cast<std::size_t>(snapshot.phase)]);
   ImGui::SameLine();
-  const double duration = perf.runDurationMs / 1000.0;
-  const double measured = perf.runSettings.warmupMs / 1000.0;
   if (duration > 0.0 && !finished) {
-    TextDim(FormatTo(buffer, "{:.1f} s of {:g} s", snapshot.elapsedSeconds, std::max(0.0, duration - measured)));
+    TextDim(FormatTo(buffer, "{:.1f} s of {:g} s", snapshot.elapsedSeconds, std::max(0.0, duration - warmup)));
   } else {
     TextDim(FormatTo(buffer, "{:.1f} s", snapshot.elapsedSeconds));
   }
   ImGui::SameLine();
   TextDim(FormatTo(buffer, "\xC2\xB7  {} connections  \xC2\xB7  {} in flight  \xC2\xB7  seed {}", snapshot.connections,
                    snapshot.inFlight, perf.runSettings.seed));
+  static constexpr std::array<std::string_view, 4> kMeals{
+      "Zalie sits down to eat...", "Zalie is warming up: these first bites do not count",
+      "Zalie is eating as fast as she can!", "Zalie is finishing her last bites..."};
   if (!finished) {
-    double progress = 0.0;
-    if (duration > measured) {
-      progress = snapshot.elapsedSeconds / (duration - measured);
-    }
-    if (perf.runMaxRequests != 0) {
-      progress =
-          std::max(progress, static_cast<double>(snapshot.requests()) / static_cast<double>(perf.runMaxRequests));
-    }
-    ImGui::SameLine();
-    ImGui::ProgressBar(static_cast<float>(std::clamp(progress, 0.0, 1.0)),
-                       ImVec2(std::min(ImGui::GetContentRegionAvail().x, 220.0F * scale), 6.0F * scale), "");
+    Text(kMeals[static_cast<std::size_t>(snapshot.phase)]);
+    ImGui::ProgressBar(static_cast<float>(bounded ? progress : 0.0),
+                       ImVec2(std::min(ImGui::GetContentRegionAvail().x, 320.0F * scale), barHeight), "");
+  } else if (snapshot.requests() != 0) {
+    Text(FormatTo(buffer, "Zalie ate {} requests. Nap time!",
+                  FormatChartValue(ChartUnit::count, static_cast<double>(snapshot.requests()), value)));
+  } else {
+    Text("Nothing to eat this time.");
   }
+  ImGui::EndGroup();
+  ImGui::SetCursorScreenPos(
+      ImVec2(origin.x, std::max(origin.y + bannerHeight, ImGui::GetItemRectMax().y) + style.ItemSpacing.y));
   if (!snapshot.setupError.empty()) {
     TextColored(pal.danger, FormatTo(buffer, "The run could not start: {}", std::string_view(snapshot.setupError)));
   }
@@ -1352,7 +1501,7 @@ void App::drawPerfDashboard(PerfTab& perf) {
   std::size_t used = 0;
   const auto keep = [&](std::string_view text) {
     const std::size_t size = std::min(text.size(), texts.size() - used);
-    std::copy_n(text.data(), size, texts.data() + used);
+    text.copy(texts.data() + used, size);
     const std::string_view kept(texts.data() + used, size);
     used += size;
     return kept;
@@ -1426,13 +1575,13 @@ void App::drawPerfDashboard(PerfTab& perf) {
     std::array<ChartSeries, kNbLoadClasses> rateSeries;
     for (std::uint32_t outcome = 0; outcome < kNbLoadClasses; ++outcome) {
       rateSeries[outcome] = {.name = kClassNames[outcome],
-                             .values = {charts.rates.data() + (outcome * nbPoints), nbPoints},
+                             .values = {charts.rates.data() + (std::size_t{outcome} * nbPoints), nbPoints},
                              .color = ClassColor(outcome)};
     }
     std::array<ChartSeries, PerfCharts::kNbLatencySeries> latencySeries;
     for (std::uint32_t series = 0; series < PerfCharts::kNbLatencySeries; ++series) {
       latencySeries[series] = {.name = kLatencyNames[series],
-                               .values = {charts.latencies.data() + (series * nbPoints), nbPoints},
+                               .values = {charts.latencies.data() + (std::size_t{series} * nbPoints), nbPoints},
                                .color = LatencyColor(series),
                                .reduce = ChartReduce::max};
     }
@@ -1485,10 +1634,10 @@ void App::drawPerfDashboard(PerfTab& perf) {
            .height = chartHeight});
     ImGui::EndTable();
   }
-  drawPerfTables(perf);
+  DrawPerfTables(perf);
 }
 
-void App::drawPerfTables(PerfTab& perf) {
+void App::DrawPerfTables(PerfTab& perf) {
   const LoadSnapshot& snapshot = *perf.snapshot;
   const Palette& pal = CurrentPalette();
   const float scale = ImGui::GetStyle().FontScaleDpi;
@@ -1595,6 +1744,8 @@ void App::drawPerfTables(PerfTab& perf) {
     ImGui::TableSetupColumn("Total");
     ImGui::TableSetupColumn("To head");
     for (std::size_t idx = 0; idx < nbClasses; ++idx) {
+      // kClassNames are views of string literals: null-terminated.
+      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
       ImGui::TableSetupColumn(kClassNames[classes[idx]].data());
     }
     ImGui::TableHeadersRow();

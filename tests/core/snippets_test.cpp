@@ -42,24 +42,6 @@ TEST(Snippets, LanguageIds) {
   EXPECT_FALSE(ParseSnippetLanguage("cobol").has_value());
 }
 
-TEST(Snippets, ShellQuoting) {
-  RawChars32 out;
-  AppendShellQuoted("it's $HOME", out);
-  EXPECT_EQ(View(out), R"('it'\''s $HOME')");
-  out.clear();
-  AppendShellQuoted("", out);
-  EXPECT_EQ(View(out), "''");
-}
-
-TEST(Snippets, DoubleQuoting) {
-  RawChars32 out;
-  AppendDoubleQuoted(
-      "a\"b\\c\nd\te\x01"
-      "é",
-      out);
-  EXPECT_EQ(View(out), R"("a\"b\\c\nd\te\u0001é")");
-}
-
 TEST(Snippets, Curl) {
   EXPECT_EQ(Generate(SnippetLanguage::curl, MakePost()),
             "curl -X POST 'https://api.example.com/users?team=a&b=1' \\\n"
@@ -224,6 +206,34 @@ TEST(Snippets, RawHttp) {
   ResolvedRequest get = MakeGet();
   get.url = "http://h:81?x=1";
   EXPECT_EQ(Generate(SnippetLanguage::rawHttp, get), "GET /?x=1 HTTP/1.1\r\nHost: h:81\r\n\r\n");
+}
+
+TEST(Snippets, NonDefaultSettings) {
+  ResolvedRequest req = MakePost();
+  req.settings.verifyTls = false;
+  req.settings.followRedirects = false;
+  req.settings.timeoutMs = 2500;
+  req.settings.httpVersion = HttpVersion::http2;
+  const std::string_view httpie = Generate(SnippetLanguage::httpie, req);
+  EXPECT_TRUE(httpie.contains(" --verify=no")) << httpie;
+  EXPECT_TRUE(httpie.contains(" --timeout=")) << httpie;
+  const std::string_view wget = Generate(SnippetLanguage::wget, req);
+  for (std::string_view option :
+       {"--header='X-Note: it'\\''s'", "--body-data=", "--max-redirect=0", "--no-check-certificate", "--timeout="}) {
+    EXPECT_TRUE(wget.contains(option)) << option << " in " << wget;
+  }
+  const std::string_view powershell = Generate(SnippetLanguage::powershell, req);
+  for (std::string_view option : {" -MaximumRedirection 0", " -SkipCertificateCheck", " -TimeoutSec 3"}) {
+    EXPECT_TRUE(powershell.contains(option)) << option << " in " << powershell;
+  }
+  EXPECT_TRUE(Generate(SnippetLanguage::javascript, req).contains("NODE_TLS_REJECT_UNAUTHORIZED=0"));
+  EXPECT_TRUE(Generate(SnippetLanguage::cppAeronet, req).contains("aeronet::HttpVersionMode::Http2"));
+  // Raw HTTP writes its own Host and Content-Length.
+  req.headers.push_back({"Host", "other.example.com"});
+  req.headers.push_back({"Content-Length", "99"});
+  const std::string_view raw = Generate(SnippetLanguage::rawHttp, req);
+  EXPECT_FALSE(raw.contains("other.example.com")) << raw;
+  EXPECT_FALSE(raw.contains("99")) << raw;
 }
 
 }  // namespace

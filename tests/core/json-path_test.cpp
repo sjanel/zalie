@@ -110,6 +110,44 @@ TEST(JsonPath, Errors) {
   EXPECT_EQ(Query(kStore, "$[99999999999999999999]"), "error: invalid integer (at position 3)");
   EXPECT_EQ(Query(kStore, "#a"), "error: a path starts with '$' (at position 1)");
   EXPECT_EQ(Query("{\"a\": ", "$.a"), "error: not a valid JSON document");
+  EXPECT_EQ(Query(kStore, "$[0"), "error: missing ']' (at position 4)");
+  EXPECT_EQ(Query(kStore, "$['a'"), "error: missing ']' (at position 6)");
+  EXPECT_EQ(Query(kStore, "$[x]"), "error: expected a name, an index, a slice or '*' (at position 3)");
+  EXPECT_EQ(Query(kStore, "$[1:-]"), "error: invalid integer (at position 5)");
+  EXPECT_EQ(Query(kStore, "$[1:2:-]"), "error: invalid integer (at position 7)");
+  EXPECT_EQ(Query(kStore, R"($['\x'])"), "error: invalid escape in a name (at position 6)");
+}
+
+TEST(JsonPath, SpacesAroundThePathAreIgnored) {
+  EXPECT_EQ(Query(kStore, " \t$.store.bicycle.color\n"), R"("red")");
+  EXPECT_EQ(Query(kStore, "$[ 'id' , 'content-type' ]"), R"([12345678901234567890,"json"])");
+}
+
+TEST(JsonPath, LimitStopsUnionsAndDescendants) {
+  auto result = EvaluateJsonPath(R"([1, 2, 3])", "$[0,1,2]", 2);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_TRUE(result->truncated);
+  EXPECT_EQ(result->matches.size(), 2U);
+
+  result = EvaluateJsonPath(kStore, "$..price", 3);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_TRUE(result->truncated);
+  ASSERT_EQ(result->matches.size(), 3U);
+  EXPECT_EQ(result->matches[2], "8.99");
+
+  result = EvaluateJsonPath(R"({"a": [[1], [2]], "b": {"c": 3}})", "$..*", 3);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_TRUE(result->truncated);
+  EXPECT_EQ(result->matches.size(), 3U);
+}
+
+TEST(JsonPath, SingularMatchLargerThanTheLimit) {
+  auto result = EvaluateJsonPath(kStore, "$.store.bicycle");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_TRUE(result->singular);
+  RawChars out;
+  EXPECT_EQ(JoinJsonPathMatches(*result, out, 10), 0U);
+  EXPECT_TRUE(out.empty());
 }
 
 TEST(JsonPath, LimitsAndTruncation) {

@@ -1,13 +1,13 @@
 #include "zalie/variables.hpp"
 
+#include <aeronet/char-hexadecimal-converter.hpp>
+#include <aeronet/timestring.hpp>
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <format>
-#include <iterator>
 #include <mutex>
 #include <random>
 #include <span>
@@ -83,19 +83,21 @@ void InterpolateImpl(std::string_view text, const VariableScope& scope, RawChars
 bool AppendDynamicVariable(std::string_view name, RawChars32& out) {
   using namespace std::chrono;
   if (name == "$timestamp") {
-    AppendInt(out, duration_cast<seconds>(system_clock::now().time_since_epoch()).count());
+    AppendAll(out, duration_cast<seconds>(system_clock::now().time_since_epoch()).count());
     return true;
   }
   if (name == "$timestampMs") {
-    AppendInt(out, duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
+    AppendAll(out, duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
     return true;
   }
   if (name == "$isoTimestamp") {
-    std::format_to(std::back_inserter(out), "{:%FT%TZ}", floor<milliseconds>(system_clock::now()));
+    static constexpr std::size_t kIsoTimestampSize = 24;  // YYYY-MM-DDTHH:MM:SS.sssZ
+    out.ensureAvailableCapacityExponential(kIsoTimestampSize);
+    out.setEnd(aeronet::TimeToStringISO8601UTCWithMs(system_clock::now(), out.end()));
     return true;
   }
   if (name == "$randomInt") {
-    AppendInt(out, RandomU64() % 1001U);
+    AppendAll(out, RandomU64() % 1001U);
     return true;
   }
   if (name == "$randomUUID" || name == "$guid") {
@@ -179,21 +181,21 @@ RawChars32 RandomUuid() {
 }
 
 void AppendUuid(std::uint64_t high, std::uint64_t low, RawChars32& out) {
+  static constexpr std::size_t kUuidLength = 36;
   std::array<std::uint8_t, 16> bytes{};
   AppendWordBytes(high, std::span<std::uint8_t, 8>(bytes.data(), 8));
   AppendWordBytes(low, std::span<std::uint8_t, 8>(bytes.data() + 8, 8));
   bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0FU) | 0x40U);  // version 4
   bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3FU) | 0x80U);  // RFC 4122 variant
-  static constexpr char kHex[] = "0123456789abcdef";
-  static constexpr std::size_t kUuidLength = 36;
-  out.ensureAvailableCapacity(kUuidLength);
+  out.ensureAvailableCapacityExponential(kUuidLength);
+  char* pData = out.end();
   for (std::size_t i = 0; i < bytes.size(); ++i) {
     if (i == 4 || i == 6 || i == 8 || i == 10) {
-      out.unchecked_push_back('-');
+      *pData++ = '-';
     }
-    out.unchecked_push_back(kHex[bytes[i] >> 4U]);
-    out.unchecked_push_back(kHex[bytes[i] & 0xFU]);
+    pData = aeronet::ToLowerHex(static_cast<unsigned char>(bytes[i]), pData);
   }
+  out.setEnd(pData);
 }
 
 }  // namespace zalie

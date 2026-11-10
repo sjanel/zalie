@@ -43,6 +43,15 @@ TEST(SplitShellWords, LineContinuations) {
   EXPECT_EQ((*words)[4], "x");
 }
 
+TEST(SplitShellWords, UnknownEscapesAreKeptAsWritten) {
+  // \x without digits and unknown escapes stay as written; a line continuation inside double quotes disappears.
+  auto words = SplitShellWords("x $'\\xZ\\q' \"a\\\nb\"");
+  ASSERT_TRUE(words.has_value());
+  ASSERT_EQ(words->size(), 3U);
+  EXPECT_EQ((*words)[1], "\\xZ\\q");
+  EXPECT_EQ((*words)[2], "ab");
+}
+
 TEST(SplitShellWords, Errors) {
   EXPECT_FALSE(SplitShellWords("curl 'unterminated").has_value());
   EXPECT_FALSE(SplitShellWords("curl \"unterminated").has_value());
@@ -170,7 +179,38 @@ TEST(CurlImport, BearerAndWarnings) {
   EXPECT_EQ(imported->warnings.size(), 5U);  // proxy, unknown option, multipart, cookie file, extra argument
 }
 
+TEST(CurlImport, OptionEdgeCases) {
+  auto imported = ParseCurlCommand(
+      "curl --request FROB -H 'X-Empty;' -H 'Malformed' -H 'Accept:' -u alice --max-time abc --data @body.json "
+      "--data-urlencode name=@file.txt --range 0-99 --raw --http2 -% -- https://h/path/");
+  ASSERT_TRUE(imported.has_value());
+  const Request& req = imported->request;
+  EXPECT_EQ(req.method, Method::post);  // the method is not one of HTTP, the data makes it a POST
+  const KeyValue* pEmpty = FindEnabled(req.headers, "X-Empty", true);
+  ASSERT_NE(pEmpty, nullptr);
+  EXPECT_TRUE(pEmpty->value.empty());
+  EXPECT_EQ(FindEnabled(req.headers, "Accept", true), nullptr);  // "Name:" removes a header
+  EXPECT_EQ(HeaderOf(req, "Range"), "bytes=0-99");
+  EXPECT_FALSE(req.settings.decompress);
+  EXPECT_EQ(req.settings.httpVersion, HttpVersion::http2);
+  EXPECT_EQ(req.auth.mode, AuthMode::basic);
+  EXPECT_EQ(View(req.auth.username), "alice");
+  EXPECT_EQ(View(req.url), "https://h/path/");
+  EXPECT_EQ(View(req.name), "POST path");
+  // Unsupported method, malformed header, no password, invalid time, body file, url-encoded file, unknown option.
+  EXPECT_EQ(imported->warnings.size(), 7U);
+}
+
+TEST(CurlImport, DataLookingLikeJsonIsJson) {
+  auto imported = ParseCurlCommand(R"(curl -d '{"a": 1}' https://h/)");
+  ASSERT_TRUE(imported.has_value());
+  EXPECT_EQ(imported->request.bodyMode, BodyMode::json);
+  EXPECT_EQ(View(imported->request.body), R"({"a": 1})");
+  EXPECT_EQ(View(imported->request.name), "POST h");
+}
+
 TEST(CurlImport, Errors) {
+  EXPECT_FALSE(ParseCurlCommand("curl https://h --header").has_value());  // a long option without its argument
   EXPECT_FALSE(ParseCurlCommand("wget https://h").has_value());
   EXPECT_FALSE(ParseCurlCommand("curl -X").has_value());
   EXPECT_FALSE(ParseCurlCommand("curl -H 'a: b'").has_value());  // no URL

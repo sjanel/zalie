@@ -6,7 +6,10 @@
 #include <aeronet/http-method.hpp>
 #include <aeronet/lower-ascii-key.hpp>
 #include <aeronet/reserved-headers.hpp>
+#include <aeronet/string-equal-ignore-case.hpp>
 #include <algorithm>
+#include <array>
+#include <cassert>
 #include <cstddef>
 #include <string_view>
 
@@ -24,27 +27,12 @@ constexpr std::string_view kUserAgent = "user-agent: zalie/" ZALIE_VERSION_STR;
 }  // namespace
 
 aeronet::http::Method ToAeronet(Method method) noexcept {
-  switch (method) {
-    case Method::get:
-      return aeronet::http::Method::GET;
-    case Method::post:
-      return aeronet::http::Method::POST;
-    case Method::put:
-      return aeronet::http::Method::PUT;
-    case Method::patch:
-      return aeronet::http::Method::PATCH;
-    case Method::del:
-      return aeronet::http::Method::DELETE;
-    case Method::head:
-      return aeronet::http::Method::HEAD;
-    case Method::options:
-      return aeronet::http::Method::OPTIONS;
-    case Method::trace:
-      return aeronet::http::Method::TRACE;
-    case Method::connect:
-      return aeronet::http::Method::CONNECT;
-  }
-  return aeronet::http::Method::GET;
+  using enum aeronet::http::Method;
+  // In the order of zalie::Method.
+  static constexpr std::array<aeronet::http::Method, kMethods.size()> kAeronetMethods{
+      GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, TRACE, CONNECT};
+  assert(static_cast<std::size_t>(method) < kAeronetMethods.size());
+  return kAeronetMethods[static_cast<std::size_t>(method)];
 }
 
 ClientKey KeyOf(const RequestSettings& settings) noexcept {
@@ -56,19 +44,15 @@ ClientKey KeyOf(const RequestSettings& settings) noexcept {
 }
 
 HeaderUse ClassifyHeader(std::string_view name, std::string_view value, RawChars32& lowerName) {
-  if (EqualsIgnoreCase(name, "content-type")) {
+  if (aeronet::CaseInsensitiveEqual(name, "content-type")) {
     return HeaderUse::contentType;
   }
   if (!IsHttpToken(name) || value.find_first_of("\r\n", 0) != std::string_view::npos || value.contains('\0')) {
     return HeaderUse::invalid;
   }
-  lowerName.clear();
-  lowerName.ensureAvailableCapacity(name.size());
-  for (char ch : name) {
-    lowerName.unchecked_push_back(ToLowerAscii(ch));
-  }
+  AssignLower(lowerName, name);
   if (aeronet::http::IsReservedOrForbiddenRequestHeader(aeronet::LowerAsciiKey{std::string_view(lowerName)}) ||
-      EqualsIgnoreCase(name, "connection")) {
+      aeronet::CaseInsensitiveEqual(name, "connection")) {
     return HeaderUse::managedByClient;
   }
   return HeaderUse::send;

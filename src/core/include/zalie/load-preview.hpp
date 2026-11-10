@@ -30,15 +30,17 @@ struct LoadRow {
   bool queryParameter{false};
   // A variable defined nowhere: without a saved parameter, the run cannot start.
   bool undefined{false};
-  // A saved parameter that the request does not use any more.
+  // A saved {{variable}} parameter that the request does not use any more.
   bool unused{false};
+  // A query parameter of the run settings that the request does not have: appended to the URL of the run.
+  bool added{false};
 
   using trivially_relocatable = AllTriviallyRelocatable<RawChars32>;
 };
 
 // Fills 'rows' with the parameter table of a request: its {{variables}} in order of appearance (with those referenced
 // by the values of other variables, dynamic ones excepted), its query parameters whose key and value have no
-// {{variable}}, then the saved parameters matching none of them.
+// {{variable}}, then the saved parameters matching none of them (query parameters added for the run, unused ones).
 void ListLoadRows(const Request& request, const Collection& collection, const VariableScope& scope,
                   amc::vector<LoadRow>& rows);
 

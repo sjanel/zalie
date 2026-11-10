@@ -1,12 +1,12 @@
 # Testing
 
-Zalie has 150 GoogleTest tests in three families, all discovered by `ctest` (one ctest entry per test):
+Zalie has about 440 GoogleTest tests in three families, all discovered by `ctest` (one ctest entry per test):
 
 | Family | Files | What they check |
 | ------ | ----- | --------------- |
-| Unit tests | `tests/core/*_test.cpp` | model, URL parsing, variables, request resolution, snippets, syntax highlighting, JSON formatting, JSONPath, text documents, string pools, persistence round trips, Bruno / Postman / curl import, the plans of performance runs (value generators, data files, parameter rows and previews) and their JSON reports |
+| Unit tests | `tests/core/*_test.cpp` | model, URL parsing, variables, request resolution, snippets (every language and setting), syntax highlighting, JSON formatting, the JSON scanner, JSONPath, text documents, string pools and buffers, escaping and encodings, files (atomic writes, errors), the desktop entry, persistence round trips, Bruno / Postman / curl import (malformed and unusual inputs included), the plans of performance runs (value generators, data files, parameter rows and previews) and their JSON reports |
 | Integration tests | `tests/core/executor_test.cpp` | real HTTP exchanges against a local [aeronet](https://github.com/sjanel/aeronet) server: methods, headers, user agent, redirects, `HEAD`, big bodies and progress, body limit, timeout, cancellation (in flight and queued), connection errors, 40 concurrent requests on 4 workers, destruction with pending requests. `tests/core/load-runner_test.cpp`: performance runs (limits, warm-up, rate cap, statuses, errors, time series, varied values) |
-| UI tests | `tests/ui/*_test.cpp` | the real interface, driven headless (see below): every section and response view, tabs and shortcuts, sending to a local server, cancelling with ++esc++, errors, pasting a curl command, JSONPath filter, response below / beside the request, imports, dialogs, filters, history, theme and HiDPI, large bodies, the Performance tab (parameter rows, plans compiled off the UI thread, runs against a local server, stop, confirmation, dropped data files, export, a dashboard of an hour), the chart widget (scales, reduction to one point per pixel, legend, hover, zoom) |
+| UI tests | `tests/ui/*_test.cpp` | the real interface, driven headless (see below): every section and response view, tabs and shortcuts, sending to a local server, cancelling with ++esc++, errors, pasting a curl command, JSONPath filter, response below / beside the request, imports, dialogs, filters, history, theme and HiDPI, large bodies, the sidebar (menus, drag and drop, filter, history), the dialogs, the inspector (cards, snippet, variables, headers), the Performance tab (run settings, parameter rows and the editor of each source, plans compiled off the UI thread, runs against a local server, stop, confirmation, dropped data files, export dialog, a dashboard of an hour), the text view (selection, drag, context menu), the chart widget (scales, reduction to one point per pixel, legend, hover, zoom) |
 
 ## Running
 
@@ -37,12 +37,34 @@ The fixture (`tests/ui/ui-test-fixture.hpp`) injects inputs between frames (keys
 moves and clicks) and turns every Dear ImGui assertion into a test failure: a misuse of the ImGui API by the
 UI code fails the build's tests instead of being silently ignored in Release.
 
-Two details to know when writing a UI test:
+The tests find the widgets by their label, as a user reads them. With `ZALIE_BUILD_TESTS`, Dear ImGui is compiled with
+its test engine hooks (`IMGUI_ENABLE_TEST_ENGINE`, defined in `tests/ui/imgui-test-hooks.cpp`): the fixture records
+the items laid out by each frame, their rectangle and their label (the one given to Dear ImGui, `##id` part included).
+`AppTest` (`tests/ui/app-test-fixture.hpp`, the application on a temporary workspace) builds the user's gestures on
+it:
+
+```cpp
+ASSERT_TRUE(click("Run##perfRun"));                    // the mouse over the button, pressed, released
+ASSERT_TRUE(choose("##combine", "All combinations"));  // a combo box, then the entry of its popup
+ASSERT_TRUE(contextMenu(collectionLabel(), "New request"));  // a right click, then an entry of the menu
+EXPECT_TRUE(hasTooltip("One pass"));                    // the mouse rests on the item, a tooltip shows up
+```
+
+`rightClick`, `middleClick`, `doubleClick`, `drag` (from an item to another), `typeText` (in the focused field) and
+`clickAt` (a point, for what has no label: a plain text) complete them. The tests of the application share one
+executable, `zalie_app_test`.
+
+Details to know when writing a UI test:
 
 - **Shortcuts need a warm-up frame**: Dear ImGui registers the routes of `Shortcut()` during a frame and resolves them
   at the next one. Render a couple of frames (`frame(2)`) before sending a chord.
 - **Requests are asynchronous**: after sending, keep rendering frames until the tab is not pending any more
   (`waitResponse()`, bounded in time), as the event loop would.
+- **Popups take two frames**: a popup or a tab bar is laid out at the second frame after the click (the helpers
+  render them). Tooltips wait for the mouse to rest, about 45 frames.
+- **Some items have no label**: a combo box does not report it (the fixture recognizes it by the hash of the label at
+  the next frame), a clipped item is recorded without it, a plain text is not an item. A repeated label takes the
+  index of the item.
 
 ## Integration tests
 

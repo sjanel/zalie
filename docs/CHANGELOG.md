@@ -56,10 +56,12 @@ First version.
 - Parameter table: every `{{variable}}` and query parameter can vary, from a fixed value, a list, integer, decimal or
   date ranges, random strings, UUIDs, timestamps or a data file (text, CSV, JSON Lines; never loaded in memory, drop
   it on its row), in order, at random or shuffled, combined independently, together or in all combinations, with a
-  seed for reproducible runs. Samples, value counts and the first requests are shown before the run.
-- Live dashboard: requests per second, latency percentiles, success and error shares, throughput; charts of the
-  requests per second by status class, of the response time over time, of the latency distribution and of the
-  latency percentiles (hover, hide a series, zoom); status codes, errors by kind and response times per class.
+  seed for reproducible runs. Query parameters can also be left out of the run or added for it only, the request
+  unchanged. Samples, value counts and the first requests are shown before the run.
+- Live dashboard, with Zalie eating a big piece of meat as the run progresses: requests per second, latency
+  percentiles, success and error shares, throughput; charts of the requests per second by status class, of the
+  response time over time, of the latency distribution and of the latency percentiles (hover, hide a series, zoom);
+  status codes, errors by kind and response times per class.
 - Export of a whole run as JSON (settings, seed, totals, percentiles, histograms, statuses, time series).
 
 ### Interface

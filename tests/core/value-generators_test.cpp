@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -174,6 +175,7 @@ TEST_F(ValueGeneratorsTest, DecimalRangeErrors) {
   EXPECT_EQ(errorOf(DecimalRange(0, 1, 0, 2)), "The step is zero");
   EXPECT_EQ(errorOf(DecimalRange(2, 1, 0.5, 2)), "The range is empty");
   EXPECT_EQ(errorOf(DecimalRange(0, 1, 0.5, 200)), "Too many decimals");
+  EXPECT_EQ(errorOf(DecimalRange(0, 1e16, 1, 0)), "The range has too many values");
 }
 
 LoadParameter DateRange(std::string_view from, std::string_view to, std::int64_t stepSeconds = 86400,
@@ -209,6 +211,11 @@ TEST_F(ValueGeneratorsTest, DateRangeErrors) {
   EXPECT_EQ(errorOf(DateRange("2026-13-01", "2026-12-31")).substr(0, 12), "Invalid date");
   EXPECT_EQ(errorOf(DateRange("2026-02-30", "2026-03-01")).substr(0, 12), "Invalid date");
   EXPECT_EQ(errorOf(DateRange("soon", "later")).substr(0, 12), "Invalid date");
+  // A time needs its minutes, and the seconds must end the text.
+  EXPECT_EQ(errorOf(DateRange("2026-01-01T12", "2026-01-02")).substr(0, 12), "Invalid date");
+  EXPECT_EQ(errorOf(DateRange("2026-01-01 12:30:45Z", "2026-01-02")).substr(0, 12), "Invalid date");
+  EXPECT_EQ(errorOf(DateRange("2026-01-01T12:30-", "2026-01-02")).substr(0, 12), "Invalid date");
+  EXPECT_EQ(errorOf(DateRange("2026-01-01T24:00", "2026-01-02")).substr(0, 12), "Invalid date");
   EXPECT_EQ(errorOf(DateRange("2026-01-02", "2026-01-01")), "The range is empty");
   EXPECT_EQ(errorOf(DateRange("2026-01-01", "2026-01-02", 0)), "The step is zero");
   EXPECT_EQ(errorOf(DateRange("2026-01-01", "2026-01-02", 86400, "%Q")), "Unknown conversion in the date format");
@@ -480,6 +487,117 @@ TEST_F(ValueGeneratorsTest, CursorsOfDifferentThreadsGiveTheSameValues) {
   ASSERT_TRUE(first.fill(123));
   ASSERT_TRUE(second.fill(123));
   EXPECT_EQ(first.values()[0], second.values()[0]);
+}
+
+// 2026-11-10T15:30:00Z, the "now" of the seeded ranges.
+constexpr std::int64_t kNow =
+    (std::chrono::sys_days{std::chrono::year{2026} / 11 / 10}.time_since_epoch().count() * 86400LL) + (15 * 3600) +
+    (30 * 60);
+
+LoadParameter Seeded(ValueSource source, std::string_view value, LoadParameter parameter = {}) {
+  parameter.source = source;
+  SeedRange(parameter, value, kNow);
+  return parameter;
+}
+
+TEST_F(ValueGeneratorsTest, ADateRangeStartsFromTheDateOfTheRequest) {
+  const LoadParameter parameter = Seeded(ValueSource::dateRange, " 2026-12-18 ");
+  EXPECT_EQ(View(parameter.dateFrom), "2026-12-18");
+  EXPECT_EQ(View(parameter.dateTo), "2026-12-24");
+  EXPECT_TRUE(parameter.dateFormat.empty());
+  EXPECT_EQ(valuesOf(parameter, 2), (Values{"2026-12-18", "2026-12-19"}));
+}
+
+TEST_F(ValueGeneratorsTest, ADateRangeKeepsTheShapeOfTheDateOfTheRequest) {
+  const LoadParameter minutes = Seeded(ValueSource::dateRange, "2026-12-18T10:30");
+  EXPECT_EQ(View(minutes.dateFormat), "%Y-%m-%dT%H:%M");
+  EXPECT_EQ(View(minutes.dateTo), "2026-12-24T10:30:00");
+  EXPECT_EQ(valuesOf(minutes, 1), (Values{"2026-12-18T10:30"}));
+
+  const LoadParameter seconds = Seeded(ValueSource::dateRange, "2026-12-18 10:30:15");
+  EXPECT_EQ(View(seconds.dateFormat), "%Y-%m-%d %H:%M:%S");
+  EXPECT_EQ(valuesOf(seconds, 1), (Values{"2026-12-18 10:30:15"}));
+}
+
+TEST_F(ValueGeneratorsTest, ADateRangeWithoutDateToStartFromStartsToday) {
+  for (std::string_view value : {std::string_view{}, std::string_view{"LON"}, std::string_view{"2026-13-01"}}) {
+    const LoadParameter parameter = Seeded(ValueSource::dateRange, value);
+    EXPECT_EQ(View(parameter.dateFrom), "2026-11-10") << value;
+    EXPECT_EQ(View(parameter.dateTo), "2026-11-16") << value;
+    EXPECT_EQ(valuesOf(parameter, 1), (Values{"2026-11-10"}));
+  }
+}
+
+TEST_F(ValueGeneratorsTest, ADateRangeOnlyFillsItsEmptyDates) {
+  LoadParameter typed;
+  typed.dateFrom.assign(std::string_view{"2026-01-01T00:00"});
+  typed.dateStepSeconds = 3600;
+  LoadParameter parameter = Seeded(ValueSource::dateRange, "2026-12-18", typed);
+  EXPECT_EQ(View(parameter.dateFrom), "2026-01-01T00:00");
+  EXPECT_EQ(View(parameter.dateTo), "2026-01-01T06:00:00");  // 7 steps
+
+  typed.dateFrom.assign(std::string_view{"2026-02-01"});
+  typed.dateTo.assign(std::string_view{"2026-03-01"});
+  parameter = Seeded(ValueSource::dateRange, "2026-12-18", typed);
+  EXPECT_EQ(View(parameter.dateFrom), "2026-02-01");
+  EXPECT_EQ(View(parameter.dateTo), "2026-03-01");
+
+  // An invalid date typed by the user is left for the plan to report.
+  typed.dateFrom.assign(std::string_view{"tomorrow"});
+  typed.dateTo.clear();
+  parameter = Seeded(ValueSource::dateRange, "2026-12-18", typed);
+  EXPECT_TRUE(parameter.dateTo.empty());
+
+  // An absurd step is not used to place the end.
+  typed.dateFrom.assign(std::string_view{"2026-02-01"});
+  typed.dateStepSeconds = std::numeric_limits<std::int64_t>::max();
+  parameter = Seeded(ValueSource::dateRange, {}, typed);
+  EXPECT_EQ(View(parameter.dateTo), "2026-02-07");
+}
+
+TEST_F(ValueGeneratorsTest, AnIntegerRangeStartsFromTheIntegerOfTheRequest) {
+  LoadParameter parameter = Seeded(ValueSource::integerRange, "3");
+  EXPECT_EQ(parameter.integerFrom, 3);
+  EXPECT_EQ(parameter.integerTo, 102);
+  EXPECT_EQ(parameter.integerPadding, 0U);
+
+  parameter = Seeded(ValueSource::integerRange, "0042");
+  EXPECT_EQ(parameter.integerFrom, 42);
+  EXPECT_EQ(parameter.integerPadding, 4U);
+  EXPECT_EQ(valuesOf(parameter, 1), (Values{"0042"}));
+
+  parameter = Seeded(ValueSource::integerRange, std::to_string(std::numeric_limits<std::int64_t>::max() - 10));
+  EXPECT_EQ(parameter.integerTo, std::numeric_limits<std::int64_t>::max());
+
+  // Not an integer, or a range already changed: kept.
+  EXPECT_EQ(Seeded(ValueSource::integerRange, "3a").integerFrom, 1);
+  EXPECT_EQ(Seeded(ValueSource::integerRange, "3", IntegerRange(5, 10)).integerFrom, 5);
+}
+
+TEST_F(ValueGeneratorsTest, ADecimalRangeStartsFromTheNumberOfTheRequest) {
+  LoadParameter parameter = Seeded(ValueSource::decimalRange, "1.250");
+  EXPECT_DOUBLE_EQ(parameter.decimalFrom, 1.25);
+  EXPECT_DOUBLE_EQ(parameter.decimalTo, 2.25);
+  EXPECT_EQ(parameter.decimals, 3U);
+
+  parameter = Seeded(ValueSource::decimalRange, "7");
+  EXPECT_DOUBLE_EQ(parameter.decimalFrom, 7.0);
+  EXPECT_EQ(parameter.decimals, 2U);
+
+  EXPECT_DOUBLE_EQ(Seeded(ValueSource::decimalRange, "x").decimalFrom, 0.0);
+  EXPECT_DOUBLE_EQ(Seeded(ValueSource::decimalRange, "inf").decimalFrom, 0.0);
+}
+
+TEST_F(ValueGeneratorsTest, OtherSourcesAreNotSeeded) {
+  const LoadParameter parameter = Seeded(ValueSource::list, "2026-12-18");
+  EXPECT_TRUE(parameter.dateFrom.empty());
+  EXPECT_EQ(parameter.integerFrom, 1);
+}
+
+TEST_F(ValueGeneratorsTest, AnOmittedParameterIsNotGenerated) {
+  LoadParameter parameter;
+  parameter.source = ValueSource::omitted;
+  EXPECT_EQ(errorOf(parameter), "Only a query parameter can be left out");
 }
 
 }  // namespace

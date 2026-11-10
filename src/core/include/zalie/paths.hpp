@@ -7,6 +7,10 @@
 
 namespace zalie {
 
+// The value of an environment variable, empty when it is not set. Zalie never modifies its environment: the view
+// stays valid.
+[[nodiscard]] std::string_view EnvironmentVariable(const char* name) noexcept;
+
 // Directory where Zalie keeps its settings, workspace state, history and (by default) its collections:
 //   $ZALIE_HOME if set, else
 //   Linux:   $XDG_CONFIG_HOME/zalie or ~/.config/zalie

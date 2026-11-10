@@ -13,7 +13,9 @@
 #include <utility>
 #include <vector>
 
+#include "json-scan.hpp"
 #include "zalie/collection.hpp"
+#include "zalie/encoding.hpp"
 #include "zalie/file-io.hpp"
 #include "zalie/key-value.hpp"
 #include "zalie/method.hpp"
@@ -202,35 +204,21 @@ BodyMode ParseBodyMode(std::string_view mode) noexcept {
   return BodyMode::none;
 }
 
-// Minimal extraction of a top-level string field of a small JSON document (bruno.json).
+// The value of a top-level string member of a small JSON document (bruno.json), empty if it has none.
 RawChars32 ExtractJsonString(std::string_view json, std::string_view key) {
-  const RawChars32 quotedKey = Concat({"\"", key, "\""});
-  std::size_t pos = json.find(View(quotedKey));
-  if (pos == std::string_view::npos) {
-    return {};
-  }
-  pos = json.find(':', pos + quotedKey.size());
-  if (pos == std::string_view::npos) {
-    return {};
-  }
-  pos = json.find('"', pos);
-  if (pos == std::string_view::npos) {
-    return {};
-  }
   RawChars32 ret;
-  for (++pos; pos < json.size() && json[pos] != '"'; ++pos) {
-    if (json[pos] == '\\' && pos + 1 < json.size()) {
-      ++pos;
-      char esc = json[pos];
-      if (esc == 'n') {
-        esc = '\n';
-      } else if (esc == 't') {
-        esc = '\t';
+  json = Trim(json);
+  if (json.starts_with('{')) {
+    // The scan stops at the member, or at the first malformed one: 'ret' is then left empty.
+    static_cast<void>(ScanJsonObject(json, [&ret, key](std::string_view rawKey, std::string_view value) {
+      if (rawKey != key) {
+        return true;
       }
-      ret.push_back(esc);
-    } else {
-      ret.push_back(json[pos]);
-    }
+      if (value.starts_with('"') && !AppendJsonUnescaped(value.substr(1, value.size() - 2), ret)) {
+        ret.clear();
+      }
+      return false;
+    }));
   }
   return ret;
 }

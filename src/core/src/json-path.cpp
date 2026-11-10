@@ -1,7 +1,9 @@
 #include "zalie/json-path.hpp"
 
+#include <aeronet/cctype.hpp>
 #include <algorithm>
 #include <amc/vector.hpp>
+#include <cassert>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -11,8 +13,10 @@
 #include <utility>
 
 #include "json-scan.hpp"
+#include "zalie/encoding.hpp"
 #include "zalie/json-format.hpp"
 #include "zalie/raw-chars.hpp"
+#include "zalie/string-utils.hpp"
 
 namespace zalie {
 
@@ -20,18 +24,19 @@ namespace {
 
 constexpr std::size_t kNpos = std::string_view::npos;
 
-constexpr bool IsDigit(char ch) noexcept { return ch >= '0' && ch <= '9'; }
 // Characters of a shorthand member name ('.name'): RFC 9535 allows letters, digits, '_' and non-ASCII; '-' and '$' are
 // accepted too, as most JSONPath implementations do ('.content-type').
 constexpr bool IsNameFirst(char ch) noexcept {
   return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || static_cast<unsigned char>(ch) >= 0x80;
 }
-constexpr bool IsNameChar(char ch) noexcept { return IsNameFirst(ch) || IsDigit(ch) || ch == '-' || ch == '$'; }
+constexpr bool IsNameChar(char ch) noexcept {
+  return IsNameFirst(ch) || aeronet::isdigit(ch) || ch == '-' || ch == '$';
+}
 
 // Decodes the escapes of a string body (between the quotes) into 'out'. Returns false on an invalid escape.
 bool Unescape(std::string_view raw, RawChars32& out) {
   out.clear();
-  return AppendUnescaped(raw, out);
+  return AppendJsonUnescaped(raw, out);
 }
 
 // Calls 'func(rawKey, value)' for the members of 'object' (a view starting with '{'), in order, until it returns false.
@@ -42,22 +47,24 @@ void ForEachMember(std::string_view object, Func&& func) {
       ScanJsonObject(object, [&func](std::string_view rawKey, std::string_view value) { return func(rawKey, value); }));
 }
 
-// Calls 'func(value)' for the elements of 'array' (a view starting with '['), in order, until it returns false.
+// Calls 'func(value)' for the elements of 'array' (a view of a valid JSON array), in order, until it returns false.
 template <class Func>
 void ForEachElement(std::string_view array, Func&& func) {
   std::size_t pos = SkipSpaces(array, 1);
-  if (pos >= array.size() || array[pos] == ']') {
+  if (array[pos] == ']') {
     return;
   }
-  while (pos < array.size()) {
+  while (true) {
     const std::size_t valueEnd = ValueEnd(array, pos);
-    if (valueEnd == kNpos || !func(array.substr(pos, valueEnd - pos))) {
+    assert(valueEnd != kNpos);
+    if (!func(array.substr(pos, valueEnd - pos))) {
       return;
     }
     pos = SkipSpaces(array, valueEnd);
-    if (pos >= array.size() || array[pos] != ',') {
+    if (array[pos] == ']') {
       return;
     }
+    assert(array[pos] == ',');
     pos = SkipSpaces(array, pos + 1);
   }
 }
@@ -102,10 +109,7 @@ class PathParser {
       ++_pos;
     } else if (IsNameFirst(_path.front())) {
       // 'items[0]' is read as '$.items[0]'.
-      Segment& segment = _segments.emplace_back();
-      if (!parseShorthandName(segment)) {
-        return std::unexpected(std::move(_error));
-      }
+      readName(_segments.emplace_back());
     } else if (_path.front() != '.' && _path.front() != '[') {
       error("a path starts with '$'");
       return std::unexpected(std::move(_error));
@@ -125,10 +129,8 @@ class PathParser {
  private:
   // Records the error (with its 1-based position) and returns false.
   bool error(std::string_view message) {
-    _error = RawChars32(message);
-    _error.append(std::string_view{" (at position "});
-    AppendInt(_error, _pos + 1);
-    _error.push_back(')');
+    _error.clear();
+    AppendAll(_error, message, " (at position ", _pos + 1, ')');
     return false;
   }
 
@@ -166,12 +168,17 @@ class PathParser {
     if (_pos >= _path.size() || !IsNameFirst(_path[_pos])) {
       return error("expected a member name");
     }
-    const std::size_t begin = _pos;
+    readName(segment);
+    return true;
+  }
+
+  // Reads the shorthand member name starting at '_pos', on its first character.
+  void readName(Segment& segment) {
+    const std::size_t begin = _pos++;
     while (_pos < _path.size() && IsNameChar(_path[_pos])) {
       ++_pos;
     }
     segment.selectors.push_back(Selector{.name = RawChars32(_path.substr(begin, _pos - begin))});
-    return true;
   }
 
   bool parseBracketed(Segment& segment) {
@@ -212,7 +219,7 @@ class PathParser {
     if (ch == '?') {
       return error("filter expressions are not supported");
     }
-    if (ch != '-' && ch != ':' && !IsDigit(ch)) {
+    if (ch != '-' && ch != ':' && !aeronet::isdigit(ch)) {
       return error("expected a name, an index, a slice or '*'");
     }
     Selector selector{.kind = SelectorKind::index};
@@ -231,7 +238,7 @@ class PathParser {
     selector.kind = SelectorKind::slice;
     ++_pos;  // ':'
     skipSpaces();
-    if (_pos < _path.size() && (_path[_pos] == '-' || IsDigit(_path[_pos]))) {
+    if (_pos < _path.size() && (_path[_pos] == '-' || aeronet::isdigit(_path[_pos]))) {
       if (!parseInt(selector.end)) {
         return false;
       }
@@ -241,7 +248,7 @@ class PathParser {
     if (_pos < _path.size() && _path[_pos] == ':') {
       ++_pos;
       skipSpaces();
-      if (_pos < _path.size() && (_path[_pos] == '-' || IsDigit(_path[_pos])) && !parseInt(selector.step)) {
+      if (_pos < _path.size() && (_path[_pos] == '-' || aeronet::isdigit(_path[_pos])) && !parseInt(selector.step)) {
         return false;
       }
     }
@@ -342,7 +349,7 @@ class Evaluator {
   // The node and its descendants, each before its own descendants (RFC 9535 '..').
   void descend(std::string_view node, const Segment& segment) {
     select(node, segment);
-    if (_stopped || node.empty()) {
+    if (_stopped) {
       return;
     }
     if (node.front() == '{') {
@@ -458,13 +465,7 @@ class Evaluator {
 
 std::expected<JsonPathResult, RawChars32> EvaluateJsonPath(std::string_view json, std::string_view path,
                                                            std::size_t maxMatches) {
-  while (!path.empty() && IsJsonSpace(path.front())) {
-    path.remove_prefix(1);
-  }
-  while (!path.empty() && IsJsonSpace(path.back())) {
-    path.remove_suffix(1);
-  }
-  auto segments = PathParser(path).parse();
+  auto segments = PathParser(Trim(path)).parse();
   if (!segments) {
     return std::unexpected(std::move(segments.error()));
   }

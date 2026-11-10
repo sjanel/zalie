@@ -375,13 +375,10 @@ bool App::importPath(const std::filesystem::path& path) {
     }
     const std::size_t nbRequests = CountRequests(imported->collection.root);
     OpenCollection& collection = _workspace.addCollection(std::move(imported->collection));
-    RawChars32 message = Concat({"Imported Bruno collection '", collection.collection.name, "': "});
-    AppendInt(message, nbRequests);
-    message.append(std::string_view{" requests"});
+    RawChars32 message;
+    AppendAll(message, "Imported Bruno collection '", collection.collection.name, "': ", nbRequests, " requests");
     if (!imported->warnings.empty()) {
-      message.append(std::string_view{", "});
-      AppendInt(message, imported->warnings.size());
-      message.append(std::string_view{" warnings"});
+      AppendAll(message, ", ", imported->warnings.size(), " warnings");
     }
     toast(message);
     for (std::string_view warning : imported->warnings) {

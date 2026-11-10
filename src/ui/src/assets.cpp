@@ -4,6 +4,8 @@
 #include <imgui_internal.h>
 #include <stb_image.h>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -19,13 +21,29 @@ namespace zalie::ui {
 
 namespace {
 
-// Sprite sheet layout: frames of 320x240 (160x120 at 2x), row 0 = 8 run frames, row 1 = 4 sleep frames.
+// Sprite sheet layout: frames of 320x240 (160x120 at 2x). Row 0 = 8 run frames, row 1 = 4 sleep frames, row 2 = 4 eat
+// frames then the 4 stages of the meat, drawn behind them.
 constexpr float kFrameWidth = 320.0F;
 constexpr float kFrameHeight = 240.0F;
-constexpr int kRunFrames = 8;
-constexpr int kSleepFrames = 4;
-constexpr double kRunFps = 14.0;
-constexpr double kSleepFps = 2.5;
+
+struct SpriteAnimation {
+  double fps;
+  int row;
+  int column;
+  int nbFrames;
+};
+
+// Indexed by Animation. The eating dog chomps at the pace of the snapshots of a run (about 10 per second), which are
+// the only redraws during a run.
+constexpr std::array<SpriteAnimation, 3> kAnimations{{{14.0, 0, 0, 8}, {2.5, 1, 0, 4}, {10.0, 2, 0, 4}}};
+// The stages of the meat, from whole to a bare bone: picked by how much is eaten, not by time.
+constexpr SpriteAnimation kMeat{0.0, 2, 4, 4};
+// The frame of the eat animation where the jaws close on the meat.
+constexpr int kBiteFrame = 1;
+
+int FrameAt(const SpriteAnimation& animation, double seconds) {
+  return static_cast<int>(std::floor(seconds * animation.fps)) % animation.nbFrames;
+}
 
 ImFont* AddEmbeddedFont(std::span<const unsigned char> ttf, float size) {
   ImFontConfig config;
@@ -108,25 +126,43 @@ void Assets::load(TextureStore& textures) {
   _pSprites = textures.createFromImage(embedded::SpritesPng());
 }
 
-ImVec2 Assets::drawSprite(ImDrawList* pDrawList, Animation animation, double seconds, ImVec2 pos, float height,
-                          bool flipped) const {
+void Assets::drawFrame(ImDrawList* pDrawList, int column, int row, ImVec2 pos, float height, bool flipped) const {
   const float width = height * kFrameWidth / kFrameHeight;
-  if (_pSprites == nullptr) {
-    return {width, height};
-  }
-  const bool run = animation == Animation::run;
-  const int nbFrames = run ? kRunFrames : kSleepFrames;
-  const int frame = static_cast<int>(std::floor(seconds * (run ? kRunFps : kSleepFps))) % nbFrames;
   const float sheetWidth = static_cast<float>(_pSprites->Width);
   const float sheetHeight = static_cast<float>(_pSprites->Height);
-  const float row = run ? 0.0F : 1.0F;
-  ImVec2 uv0(static_cast<float>(frame) * kFrameWidth / sheetWidth, row * kFrameHeight / sheetHeight);
+  ImVec2 uv0(static_cast<float>(column) * kFrameWidth / sheetWidth,
+             static_cast<float>(row) * kFrameHeight / sheetHeight);
   ImVec2 uv1(uv0.x + (kFrameWidth / sheetWidth), uv0.y + (kFrameHeight / sheetHeight));
   if (flipped) {
     std::swap(uv0.x, uv1.x);
   }
   pDrawList->AddImage(_pSprites->GetTexRef(), pos, ImVec2(pos.x + width, pos.y + height), uv0, uv1);
-  return {width, height};
+}
+
+ImVec2 Assets::drawSprite(ImDrawList* pDrawList, Animation animation, double seconds, ImVec2 pos, float height,
+                          bool flipped) const {
+  const ImVec2 size(height * kFrameWidth / kFrameHeight, height);
+  if (_pSprites == nullptr) {
+    return size;
+  }
+  const SpriteAnimation& layout = kAnimations[static_cast<std::size_t>(animation)];
+  drawFrame(pDrawList, layout.column + FrameAt(layout, seconds), layout.row, pos, height, flipped);
+  return size;
+}
+
+ImVec2 Assets::drawMeal(ImDrawList* pDrawList, double seconds, float eaten, ImVec2 pos, float height) const {
+  const ImVec2 size(height * kFrameWidth / kFrameHeight, height);
+  if (_pSprites == nullptr) {
+    return size;
+  }
+  const SpriteAnimation& eat = kAnimations[static_cast<std::size_t>(Animation::eat)];
+  const int frame = FrameAt(eat, seconds);
+  const int stage = std::clamp(static_cast<int>(eaten * static_cast<float>(kMeat.nbFrames)), 0, kMeat.nbFrames - 1);
+  // The meat gives a little under the bite.
+  const float squash = frame == kBiteFrame ? std::max(1.0F, std::round(height / 120.0F)) : 0.0F;
+  drawFrame(pDrawList, kMeat.column + stage, kMeat.row, ImVec2(pos.x, pos.y + squash), height, false);
+  drawFrame(pDrawList, eat.column + frame, eat.row, pos, height, false);
+  return size;
 }
 
 }  // namespace zalie::ui
