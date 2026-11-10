@@ -22,6 +22,7 @@ add_library(
   src/load-report.cpp
   src/load-runner.cpp
   src/paths.cpp
+  src/rate-controller.cpp
   src/persistence.cpp
   src/postman-import.cpp
   src/resolved-request.cpp

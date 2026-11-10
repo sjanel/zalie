@@ -25,13 +25,17 @@ Performance tabs are not restored after a restart: export a run you want to keep
 | Duration | The run ends after this time, warm-up included. 10 s by default |
 | Warm-up | The requests started during the first seconds are sent but not counted: connections are opened, caches warmed |
 | Max requests | The run ends after this number of requests, warm-up included |
-| Max req/s | The requests never go faster than this, whatever the number of connections |
+| Max req/s | The requests never go faster than this, whatever the number of connections. With the adaptive rate: its maximum |
+| Adaptive rate | The rate adapts to what the server sustains, see [below](#adaptive-rate) |
+| Min req/s | Adaptive rate only: the rate it starts from and never goes below. 10 when 0 |
+| Max p99 | Adaptive rate only: the rate backs off when the p99 of the response times exceeds this. 0 for no cap |
 | One pass | The run also ends once every value of the parameters has been sent |
 | Combine | How the parameters advance together, see [below](#combine-the-parameters) |
 | Seed | Equal seeds send equal requests (timestamps aside). 0 picks a new seed for each run |
 
 For the limits, 0 means none, and the first limit reached ends the run. The line below the settings tells what the run
-will send ("Planned: 2000 requests on 8 connections", "one pass: 150 requests"), or what prevents it: an empty range, a
+will send ("Planned: 2000 requests on 8 connections", "adaptive rate 10 to 5000 req/s", "one pass: 150 requests"), or
+what prevents it: an empty range, a
 `{{variable}}` without value, a missing data file...
 
 The settings are saved in the collection, next to the request, so they can be shared and versioned with it. They are
@@ -124,15 +128,46 @@ progresses (by time or by requests, whichever limit is closer), so the bare bone
 a limit, a new piece comes every 8 seconds. Once the run is over, she naps. She chomps at the pace of the dashboard
 refreshes: the animation costs no extra frame.
 
+## Adaptive rate
+
+Check **Adaptive rate** to let Zalie find the rate the server sustains instead of fixing it. The rate starts at
+**Min req/s**, a rate the server surely handles, then changes about every 2 seconds from what the last measure (at
+least 30 requests, or 5 seconds at low rates) shows, like the congestion control of TCP:
+
+| The last measure | The rate |
+| ---------------- | -------- |
+| Healthy: response times close to their baseline, no more failures than usual | doubles; after the first sign of load, rises by 5 % |
+| Slower: median above 1.5 times its baseline, p90 above 2 times, or p99 within 10 % of **Max p99** | holds |
+| Overloaded: median above 3 times its baseline, p90 above 4 times, or p99 above **Max p99** | backs off by 20 % |
+| Failing: failures (`5xx`, `429`, no response) 1 point above their usual share, or over half of the requests; no response at all | halves |
+| Not reached: the connections send less than 90 % of the rate | comes down to what they reach |
+
+It never goes below **Min req/s** nor above **Max req/s** (0: no maximum), and keeps adapting until the run ends: if
+the server weakens later, the rate follows it down.
+
+- **Baseline**: the lowest median and p90 of the healthy measures, made at low load first. Each comparison adds a
+  margin of 0.5 ms, the noise of a fast local server. The usual share of failures is the one of the healthy measures:
+  an endpoint failing 5 % of the time at any rate is not overloaded.
+- **Max p99**, in milliseconds, for a service level ("p99 under 50 ms"). 0 relies on the baseline only.
+- The warm-up runs at the minimum. Give the run time: from 10 to 10 000 requests per second takes about 20 seconds of
+  doubling.
+- The connections still bound the rate, each one waiting for its response before sending the next: when they cannot
+  reach it, the dashboard says so. Add connections, or the rate measures the client rather than the server.
+- The dashboard tells the state of the rate (ramping up, probing, holding, backing off, limited by the connections, at
+  its maximum), its target and the baseline median. **Requests / s** gives the **sustained** rate, the highest one
+  measured while the server was healthy, and the chart of the requests per second draws the target over them.
+
 ## Dashboard
 
 - **Status line**, beside Zalie: phase (warming up, running, finished), measured time, connections, requests in
   flight and seed, then the progress of the run. A
   warning appears when the client, not the server, is the bottleneck (its CPU is above 90 % of what its connections
   can use): the numbers then measure Zalie more than the server.
-- **Key numbers**: requests per second (current during the run, mean once over, and the peak), median, p99 and maximum
-  response time, share of `2xx` and of errors, decoded throughput and requests counted.
-- **Requests per second**, stacked by status class: a wave of `5xx` shows at once.
+- **Key numbers**: requests per second (current during the run, mean once over, and the peak; the sustained rate
+  instead of the mean with the [adaptive rate](#adaptive-rate)), median, p99 and maximum response time, share of `2xx`
+  and of errors, decoded throughput and requests counted.
+- **Requests per second**, stacked by status class: a wave of `5xx` shows at once. With the adaptive rate, its target
+  is drawn over them.
 - **Response time**: p50, p90, p99 and max of each second, on a linear or logarithmic scale.
 - **Latency distribution**: how many responses took each time, on a logarithmic axis, the percentiles marked.
 - **Latency by percentile**: the time under which 50 %, 90 %, 99 %, 99.9 % of the responses were received.

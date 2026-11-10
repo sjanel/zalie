@@ -47,6 +47,8 @@ struct ChartSeries {
   std::span<const float> values;
   ImU32 color{0};
   ChartReduce reduce{ChartReduce::mean};
+  // With stacked areas: a line over the stack (a target), not stacked and not in the total.
+  bool overlay{false};
 };
 
 // A labelled vertical line (the percentiles of a histogram).

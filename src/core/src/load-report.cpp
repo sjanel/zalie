@@ -47,6 +47,8 @@ struct Totals {
   double elapsedSeconds{0.0};
   double meanRequestsPerSecond{0.0};
   double peakRequestsPerSecond{0.0};
+  // Adaptive rate: the highest rate measured while the server was healthy. 0 for a fixed rate.
+  double sustainedRequestsPerSecond{0.0};
   double bodyBytesPerSecond{0.0};
   double cpuSeconds{0.0};
   double clientLoad{0.0};
@@ -159,6 +161,7 @@ std::string SerializeLoadReport(const LoadSnapshot& snapshot, const LoadSettings
                 .elapsedSeconds = snapshot.elapsedSeconds,
                 .meanRequestsPerSecond = snapshot.meanRequestsPerSecond,
                 .peakRequestsPerSecond = snapshot.peakRequestsPerSecond,
+                .sustainedRequestsPerSecond = snapshot.sustainedRequestsPerSecond,
                 .bodyBytesPerSecond = snapshot.bodyBytesPerSecond,
                 .cpuSeconds = snapshot.cpuSeconds,
                 .clientLoad = snapshot.clientLoad,

@@ -9,6 +9,7 @@
 #include <aeronet/http-server-config.hpp>
 #include <aeronet/router.hpp>
 #include <aeronet/single-http-server.hpp>
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -30,6 +31,7 @@
 #include "zalie/load-runner.hpp"
 #include "zalie/load-settings.hpp"
 #include "zalie/method.hpp"
+#include "zalie/rate-controller.hpp"
 #include "zalie/raw-chars.hpp"
 #include "zalie/request.hpp"
 #include "zalie/ui/app.hpp"
@@ -459,6 +461,61 @@ TEST_F(PerfPanelTest, TheHeaderRunsStopsAndExportsARun) {
   ASSERT_TRUE(click("Export"));
   EXPECT_FALSE(ModalOpen());
   EXPECT_TRUE(std::filesystem::exists(report));
+}
+
+TEST_F(PerfPanelTest, TheAdaptiveRateShowsItsFieldsOnceChosen) {
+  ui::RequestTab& tab = openPerf("http://127.0.0.1:1/x");
+  const Request& request = *app->requestOf(tab);
+  EXPECT_FALSE(hasItem("##minRate"));
+  EXPECT_FALSE(hasItem("##maxP99"));
+  ASSERT_TRUE(click("Adaptive rate"));
+  ASSERT_TRUE(request.load.has_value());
+  EXPECT_TRUE(request.load->adaptiveRate);
+  frame(2);
+  ASSERT_TRUE(edit("##minRate", "50"));
+  EXPECT_EQ(request.load->minRequestsPerSecond, 50U);
+  ASSERT_TRUE(edit("##maxP99", "12.5"));
+  EXPECT_DOUBLE_EQ(request.load->maxP99Ms, 12.5);
+  ASSERT_TRUE(edit("##maxP99", "-4"));
+  EXPECT_DOUBLE_EQ(request.load->maxP99Ms, 0.0);
+  ASSERT_TRUE(edit("##maxRate", "400"));
+  ASSERT_TRUE(click("Adaptive rate"));
+  frame(2);
+  EXPECT_FALSE(request.load->adaptiveRate);
+  EXPECT_FALSE(hasItem("##minRate"));
+  EXPECT_EQ(request.load->minRequestsPerSecond, 50U);  // kept for the next time
+}
+
+TEST_F(PerfPanelTest, TheDashboardDrawsTheTargetOfAnAdaptiveRate) {
+  ui::RequestTab& tab = openPerf("http://127.0.0.1:1/x");
+  const auto show = [&](bool adaptive) {
+    auto snapshot = std::make_shared<LoadSnapshot>();
+    snapshot->phase = LoadPhase::running;
+    snapshot->connections = 4;
+    snapshot->elapsedSeconds = 6.0;
+    for (std::uint32_t second = 0; second < 6; ++second) {
+      const std::uint32_t target = 100U << std::min(second, 3U);
+      snapshot->series.push_back(
+          LoadSecond{.counts = {target, 0, 0, 0, 0}, .p50Ns = 1'000'000, .targetRate = adaptive ? target : 0U});
+    }
+    snapshot->counts = {3000, 0, 0, 0, 0};
+    if (adaptive) {
+      snapshot->targetRequestsPerSecond = 640.0;
+      snapshot->sustainedRequestsPerSecond = 800.0;
+      snapshot->baselineP50Ns = 1'000'000;
+      snapshot->rateState = RateState::backOff;
+    }
+    app->showLoadSnapshot(tab, snapshot);
+    frame(2);
+    EXPECT_EQ(LastFrameNonFiniteVertices(), 0);
+    return LastFrameVertices();
+  };
+  const int fixed = show(false);
+  const int adaptive = show(true);
+  EXPECT_GT(adaptive, fixed);  // the target line, its legend and the state of the rate
+  const ui::PerfCharts& charts = tab.perf->charts;
+  ASSERT_EQ(charts.rates.size(), (kNbLoadClasses + 1) * 6U);
+  EXPECT_FLOAT_EQ(charts.rates[(kNbLoadClasses * 6U) + 5], 800.0F);
 }
 
 TEST_F(PerfPanelTest, TheDashboardShowsTheErrorsOfAFakeRun) {

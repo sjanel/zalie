@@ -12,6 +12,7 @@
 #include "zalie/latency-histogram.hpp"
 #include "zalie/load-plan.hpp"
 #include "zalie/load-settings.hpp"
+#include "zalie/rate-controller.hpp"
 #include "zalie/raw-chars.hpp"
 #include "zalie/resolved-request.hpp"
 
@@ -68,9 +69,14 @@ struct LoadOptions {
   std::size_t maxBodyBytes{kDefaultMaxBodyBytes};
   // Requests sent, warm-up included.
   std::uint64_t maxRequests{0};
+  // Adaptive rate: p99 of the response times above which the rate backs off. 0: no cap.
+  std::uint64_t maxP99Ns{0};
   // Warm-up included.
   std::uint32_t durationMs{kDefaultDurationMs};
+  // The highest rate, also of the adaptive rate (0: none).
   std::uint32_t maxRequestsPerSecond{0};
+  // Adaptive rate: the rate it starts from, during the warm-up too, and never goes below. 0: 10 requests per second.
+  std::uint32_t minRequestsPerSecond{0};
   // First part of the run: the requests started during it are sent but not counted.
   std::uint32_t warmupMs{0};
   // Number of connections, each one is a thread. 0: the number of vCPUs.
@@ -79,6 +85,8 @@ struct LoadOptions {
   std::uint32_t maxConnections{0};
   // Also ends the run after one pass over the values.
   bool onePass{false};
+  // The rate adapts to what the server sustains (RateController), between the min and the max requests per second.
+  bool adaptiveRate{false};
 };
 
 // The limits of a run from its saved settings. The rest of the options keep their defaults.
@@ -121,6 +129,8 @@ struct LoadSecond {
   float seconds{1.0F};
   // Highest number of requests seen in flight.
   std::uint32_t inFlight{0};
+  // Requests per second the adaptive rate aimed at during this second. 0 for a fixed rate.
+  std::uint32_t targetRate{0};
 };
 
 struct LoadStatusCount {
@@ -175,19 +185,29 @@ struct LoadSnapshot {
   double cpuSeconds{0.0};
   // cpuSeconds relative to the CPUs the connections can use. Can exceed 1: the other threads of the process count too.
   double clientLoad{0.0};
+  // Adaptive rate: the requests per second it aims at now (0 for a fixed rate), and the highest rate measured while the
+  // server was healthy.
+  double targetRequestsPerSecond{0.0};
+  double sustainedRequestsPerSecond{0.0};
+  // Adaptive rate: the lowest median response time of a healthy measure, the reference of the next ones.
+  std::uint64_t baselineP50Ns{0};
   // Index since the end of the warm-up of the first point of 'series'.
   std::uint32_t firstSecond{0};
   std::uint32_t connections{0};
   std::uint32_t inFlight{0};
   LoadPhase phase{LoadPhase::starting};
+  // Adaptive rate: its last decision.
+  RateState rateState{RateState::rampUp};
   // The client, not the server, limits the throughput: the measures say little about the server.
   bool clientSaturated{false};
 };
 
 // Sends the requests of a plan over and over from its own threads (the interactive executor stays available) in the
-// closed model: each connection sends its next request as soon as the previous one completed. Bodies are counted, never
-// kept. The workers publish their statistics without locking, a collector thread merges them about 10 times per second
-// into a snapshot, which is all the UI reads: its cost does not depend on the number of connections.
+// closed model: each connection sends its next request as soon as the previous one completed, within the rate cap if
+// any. Bodies are counted, never kept. The workers publish their statistics without locking, a collector thread merges
+// them about 10 times per second into a snapshot, which is all the UI reads: its cost does not depend on the number of
+// connections. With the adaptive rate, the collector also gives each complete second to a RateController, which sets
+// the rate cap.
 class LoadRunner {
  public:
   // Starts the run. An invalid plan ends it at once, with its first issue as 'setupError'.

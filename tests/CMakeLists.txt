@@ -28,6 +28,7 @@ foreach(
   load-report
   persistence
   postman-import
+  rate-controller
   raw-chars
   resolved-request
   snippets

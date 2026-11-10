@@ -86,6 +86,8 @@ A request can carry the settings of its load test in a `load` object. It is left
 | Field | Values |
 | ----- | ------ |
 | `load.durationMs`, `load.maxRequests`, `load.maxRequestsPerSecond` | limits of the run, 0 for none: the first one reached ends it |
+| `load.adaptiveRate` | the rate adapts to what the server sustains, from `load.minRequestsPerSecond` (0 for 10) up to `load.maxRequestsPerSecond` |
+| `load.maxP99Ms` | adaptive rate: p99 of the response times above which the rate backs off, 0 for none |
 | `load.onePass` | also ends the run after one pass over the values |
 | `load.warmupMs` | first part of the run, sent but not counted |
 | `load.connections` | number of connections, 0 for the number of vCPUs |
@@ -125,7 +127,8 @@ sizes in bytes.
   "totals": {
     "requests": 353450, "bodyBytes": 541421568, "minBodyBytes": 1536, "maxBodyBytes": 1536,
     "elapsedSeconds": 30.0, "meanRequestsPerSecond": 11781.7, "peakRequestsPerSecond": 12851.0,
-    "bodyBytesPerSecond": 18047385.6, "cpuSeconds": 41.2, "clientLoad": 0.43, "clientSaturated": false
+    "sustainedRequestsPerSecond": 0.0, "bodyBytesPerSecond": 18047385.6, "cpuSeconds": 41.2, "clientLoad": 0.43,
+    "clientSaturated": false
   },
   "latency": {
     "count": 353414, "minNs": 331000, "p50Ns": 2160000, "p90Ns": 3870000, "p95Ns": 4590000,
@@ -145,7 +148,7 @@ sizes in bytes.
     "firstSecond": 0,
     "points": [
       { "counts": [12360, 0, 37, 0, 0], "bodyBytes": 19042304, "p50Ns": 2150000, "p90Ns": 3860000,
-        "p99Ns": 6650000, "maxNs": 12100000, "seconds": 1.0, "inFlight": 32 }
+        "p99Ns": 6650000, "maxNs": 12100000, "seconds": 1.0, "inFlight": 32, "targetRate": 0 }
     ]
   }
 }
@@ -161,4 +164,5 @@ sizes in bytes.
 | `histograms` | the non-empty buckets of the latency histograms: `[lower bound, count]`. Buckets are log-linear, 16 per power of two: a bucket starting at `l >= 16` is `2^(floor(log2(l)) - 4)` wide |
 | `series.points` | one point per second since the end of the warm-up, the counts in the order of `series.classes`. `seconds` is below 1 for the last point of a run. A long run keeps its last hour: `firstSecond` is the index of the first point kept |
 | `totals.clientLoad` | CPU time of Zalie over the measured time, relative to the CPUs its connections can use. `clientSaturated` is set above 0.9 |
+| `totals.sustainedRequestsPerSecond`, `series.points[].targetRate` | adaptive rate: the highest rate measured while the server was healthy, and the rate aimed at during each second. 0 for a fixed rate |
 

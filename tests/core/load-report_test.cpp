@@ -35,6 +35,7 @@ LoadSnapshot MakeSnapshot() {
   snapshot.connections = 4;
   snapshot.elapsedSeconds = 2.5;
   snapshot.meanRequestsPerSecond = 1200.0;
+  snapshot.sustainedRequestsPerSecond = 1150.0;
   snapshot.counts[k2xx] = 2999;
   snapshot.counts[kError] = 1;
   for (int idx = 0; idx < 2999; ++idx) {
@@ -43,7 +44,7 @@ LoadSnapshot MakeSnapshot() {
   }
   snapshot.statuses.push_back({.count = 2999, .status = 200});
   snapshot.errors[static_cast<std::size_t>(LoadErrorKind::timeout)] = {.count = 1, .firstMessage = "timed out"};
-  snapshot.series.push_back({.counts = {1200, 0, 0, 0, 0}, .bodyBytes = 6000, .p50Ns = 2'000'000});
+  snapshot.series.push_back({.counts = {1200, 0, 0, 0, 0}, .bodyBytes = 6000, .p50Ns = 2'000'000, .targetRate = 1250});
   snapshot.series.push_back({.counts = {1799, 0, 0, 0, 1}, .bodyBytes = 8995, .seconds = 0.5F});
   snapshot.plan = std::make_shared<const LoadPlan>(ResolvedRequest{});
   return snapshot;
@@ -61,7 +62,7 @@ TEST(LoadReport, HoldsTheWholeRun) {
         R"("name": "Search")", R"("method": "POST")", R"("url": "{{base}}/search")", R"("combine": "together")",
         R"("seed": 1)", R"("requests": 3000)", R"("name": "2xx")", R"("name": "error")", R"("status": 200)",
         R"("kind": "timeout")", R"("firstMessage": "timed out")", R"("classes": [)", R"("seconds": 0.5)",
-        R"("p50Ns": 2000000)"}) {
+        R"("p50Ns": 2000000)", R"("sustainedRequestsPerSecond": 1150)", R"("targetRate": 1250)"}) {
     EXPECT_TRUE(json.contains(expected)) << expected << "\n" << json;
   }
   // Histograms keep their non-empty buckets only.

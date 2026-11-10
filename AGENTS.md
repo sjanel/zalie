@@ -84,7 +84,7 @@ cmake --preset debug && cmake --build --preset debug && ctest --preset debug
 
 ## Definition of done (every fix/feature)
 
-1. **Tests**: the change is covered, the whole suite passes.
+1. **Tests**: the change is covered (target 100 % for new code), the whole suite passes.
 2. **No warning**: the build is warning-free (`-D ZALIE_WARNINGS_AS_ERRORS=ON`) and `clang-format --dry-run` reports
    nothing.
 3. **Docs**: the MkDocs page of the feature; `docs/ROADMAP.md` when relevant. The rest of the site and
@@ -95,4 +95,4 @@ cmake --preset debug && cmake --build --preset debug && ctest --preset debug
 ## Git
 
 Never commit or push unless explicitly asked. Use git for read-only operations by default; branch before committing if
-on `main`. Suggest a branch name and a short commit message (around 100 chars max).
+on `main`.

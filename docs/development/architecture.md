@@ -72,6 +72,8 @@ charts prepared once per snapshot, drawn at most one point per pixel
 - **Charts at a constant cost**: the series are converted once per snapshot (rates, latencies, a histogram re-binned
   evenly on its logarithmic axis, the percentile curve); the chart widget reduces them to one point per pixel when the
   data, the width or the zoom change, so a frame costs the same for a run of 10 seconds or of an hour.
+- **The adaptive rate decides off the hot path**: the collector gives each complete second to a `RateController`, which
+  sets the interval of the rate cap that the workers read anyway when they take a send slot: nothing more per request.
 - **Closing a tab never waits for its run**: the run is stopped and released later, once its requests in flight end
   (at their next bytes, or their timeout).
 

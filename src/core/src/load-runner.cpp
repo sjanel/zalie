@@ -24,6 +24,7 @@
 #include "zalie/latency-histogram.hpp"
 #include "zalie/load-plan.hpp"
 #include "zalie/load-settings.hpp"
+#include "zalie/rate-controller.hpp"
 #include "zalie/raw-chars.hpp"
 #include "zalie/resolved-request.hpp"
 
@@ -54,6 +55,7 @@ constexpr std::int64_t kRateToleranceNs = 10'000'000;
 constexpr std::int64_t kMaxSlotSleepNs = 10'000'000;
 
 constexpr int kMinStatus = 100;
+constexpr int kTooManyRequests = 429;
 constexpr int kMaxStatus = 999;
 constexpr std::size_t kNbStatuses = kMaxStatus - kMinStatus + 1;
 constexpr std::size_t kErrorClass = static_cast<std::size_t>(LoadClass::error);
@@ -74,6 +76,11 @@ constexpr std::string_view kDefaultContentType = "text/plain";
 
 [[nodiscard]] double ToSeconds(steady_clock::duration duration) noexcept {
   return std::chrono::duration<double>(duration).count();
+}
+
+// Time between two sends at this rate, in requests per second (0: no limit).
+[[nodiscard]] std::int64_t IntervalNs(double rate) noexcept {
+  return rate > 0.0 ? std::max(std::llround(1e9 / rate), 1LL) : 0;
 }
 
 // User + system CPU time consumed so far by all the threads of this process (0 where unsupported).
@@ -290,6 +297,9 @@ struct OpenSecond {
   LatencyHistogram latency;
   std::array<std::uint64_t, kNbLoadClasses> counts{};
   std::uint64_t bodyBytes{0};
+  // For the adaptive rate: requests not sent (a refused value), and 429 responses.
+  std::uint64_t refused{0};
+  std::uint64_t throttled{0};
   std::uint32_t inFlight{0};
 };
 
@@ -309,11 +319,14 @@ namespace {
 
 LoadOptions MakeLoadOptions(const LoadSettings& settings) noexcept {
   return {.maxRequests = settings.maxRequests,
+          .maxP99Ns = static_cast<std::uint64_t>(std::llround(std::max(settings.maxP99Ms, 0.0) * 1e6)),
           .durationMs = settings.durationMs,
           .maxRequestsPerSecond = settings.maxRequestsPerSecond,
+          .minRequestsPerSecond = settings.minRequestsPerSecond,
           .warmupMs = settings.warmupMs,
           .connections = settings.connections,
-          .onePass = settings.onePass};
+          .onePass = settings.onePass,
+          .adaptiveRate = settings.adaptiveRate};
 }
 
 std::uint64_t PlannedRequests(const LoadPlan& plan, const LoadOptions& options) noexcept {
@@ -337,11 +350,15 @@ class LoadRunner::Impl {
       : _pPlan(std::move(pPlan)),
         _options(options),
         _maxRequests(MaxRequestsOf(*_pPlan, options)),
-        _slotIntervalNs(options.maxRequestsPerSecond != 0 ? 1'000'000'000LL / options.maxRequestsPerSecond : 0),
         _nbConnections(_pPlan->valid() ? LoadConnections(options) : 0),
         _snapshot(std::make_shared<const LoadSnapshot>()),
         _pTotals(std::make_unique<StatsBlock>()),
-        _pOpenSeconds(std::make_unique<std::array<OpenSecond, 2>>()) {
+        _pOpenSeconds(std::make_unique<std::array<OpenSecond, 2>>()),
+        _pRate(options.adaptiveRate ? std::make_unique<RateController>(options.minRequestsPerSecond,
+                                                                       options.maxRequestsPerSecond, options.maxP99Ns)
+                                    : nullptr) {
+    _slotIntervalNs.store(IntervalNs(_pRate != nullptr ? _pRate->rate() : options.maxRequestsPerSecond),
+                          std::memory_order_relaxed);
     for (const RawChars32& warning : _pPlan->warnings()) {
       _warnings.push_back(warning);
     }
@@ -491,7 +508,7 @@ class LoadRunner::Impl {
       // Before the clock starts: computing the values is not a latency of the server.
       const std::string_view refusal =
           pFiller != nullptr ? prepare(*pFiller, number, client, built) : std::string_view{};
-      if (refusal.empty() && _slotIntervalNs != 0 && !waitForSlot()) {
+      if (refusal.empty() && !waitForSlot()) {
         return;
       }
       const TimePoint begin = steady_clock::now();  // after the wait: a chosen pause is not a latency
@@ -516,15 +533,20 @@ class LoadRunner::Impl {
     }
   }
 
-  // Waits for the next free send slot of the rate cap, shared by the workers. Returns false if the run ends meanwhile.
-  // The n-th request cannot start before (n - 1) intervals, whatever the tolerance: the cap holds since the start.
+  // Waits for the next free send slot of the rate cap, shared by the workers, if there is one. Returns false if the run
+  // ends meanwhile. The n-th request cannot start before (n - 1) intervals, whatever the tolerance: the cap holds since
+  // the start. A new interval (adaptive rate) applies from the next slot taken.
   [[nodiscard]] bool waitForSlot() {
+    const std::int64_t intervalNs = _slotIntervalNs.load(std::memory_order_relaxed);
+    if (intervalNs == 0) {
+      return true;
+    }
     const std::int64_t nowNs = ToNs(steady_clock::now() - _start);
     std::int64_t next = _nextSlotNs.load(std::memory_order_relaxed);
     std::int64_t slot = 0;
     do {
       slot = std::max(next, nowNs - kRateToleranceNs);
-    } while (!_nextSlotNs.compare_exchange_weak(next, slot + _slotIntervalNs, std::memory_order_relaxed));
+    } while (!_nextSlotNs.compare_exchange_weak(next, slot + intervalNs, std::memory_order_relaxed));
     while (!_stop.load(std::memory_order_relaxed)) {
       const std::int64_t remainingNs = slot - ToNs(steady_clock::now() - _start);
       if (remainingNs <= 0) {
@@ -665,6 +687,8 @@ class LoadRunner::Impl {
       }
     }
     open.bodyBytes += block.bodyBytes;
+    open.refused += block.errors[static_cast<std::size_t>(LoadErrorKind::invalidValue)];
+    open.throttled += block.statuses[kTooManyRequests - kMinStatus];
   }
 
   // The open point of 'second', closing the ones it leaves behind. A statistic arriving too late for its point (a
@@ -686,6 +710,12 @@ class LoadRunner::Impl {
                      .maxNs = open[0].latency.maxNs(),
                      .seconds = seconds,
                      .inFlight = open[0].inFlight};
+    if (_pRate != nullptr) {
+      point.targetRate = static_cast<std::uint32_t>(std::lround(_pRate->rate()));
+      if (seconds >= 1.0F) {
+        adaptRate(open[0], point);
+      }
+    }
     if (_series.size() == kMaxSeriesSeconds) {
       _series.erase(_series.begin());
     }
@@ -697,6 +727,16 @@ class LoadRunner::Impl {
     open[0] = open[1];
     open[1] = OpenSecond{};
     ++_oldestOpen;
+  }
+
+  // Gives a complete second to the adaptive rate, and applies its decision to the next send slots.
+  void adaptRate(const OpenSecond& second, const LoadSecond& point) {
+    const std::uint64_t requests = point.requests() - second.refused;
+    const std::uint64_t failures = point.counts[static_cast<std::size_t>(LoadClass::status5xx)] +
+                                   point.counts[kErrorClass] - second.refused + second.throttled;
+    if (_pRate->onSecond(second.latency, requests, failures)) {
+      _slotIntervalNs.store(IntervalNs(_pRate->rate()), std::memory_order_relaxed);
+    }
   }
 
   void closeElapsedSeconds(TimePoint now) {
@@ -821,6 +861,12 @@ class LoadRunner::Impl {
     }
     snapshot->currentRequestsPerSecond = _lastFullSecondRate.value_or(snapshot->meanRequestsPerSecond);
     snapshot->peakRequestsPerSecond = std::max(_peakRate, snapshot->meanRequestsPerSecond);
+    if (_pRate != nullptr) {
+      snapshot->targetRequestsPerSecond = _pRate->rate();
+      snapshot->sustainedRequestsPerSecond = _pRate->sustainedRate();
+      snapshot->baselineP50Ns = _pRate->baselineP50Ns();
+      snapshot->rateState = _pRate->state();
+    }
     return snapshot;
   }
 
@@ -838,7 +884,6 @@ class LoadRunner::Impl {
   std::shared_ptr<const LoadPlan> _pPlan;
   LoadOptions _options;
   std::uint64_t _maxRequests;
-  std::int64_t _slotIntervalNs;
   std::uint32_t _nbConnections;
 
   // Written by the collector before the workers are released, constant afterwards.
@@ -847,9 +892,11 @@ class LoadRunner::Impl {
   TimePoint _deadline{TimePoint::max()};
 
   // Written for each request by every worker: kept apart from what the workers only read. The rate cap, when there is
-  // one, takes its slot right after the request number: sharing their cache line costs one miss instead of two.
+  // one, takes its slot right after the request number: sharing their cache line costs one miss instead of two. Its
+  // interval (0: no cap) only changes with the adaptive rate, about once per second.
   alignas(64) std::atomic<std::uint64_t> _nextRequest{0};
   std::atomic<std::int64_t> _nextSlotNs{0};
+  std::atomic<std::int64_t> _slotIntervalNs{0};
 
   // Read for each request and each chunk of body, and written only to end the run.
   alignas(64) std::atomic<bool> _stop{false};
@@ -872,6 +919,8 @@ class LoadRunner::Impl {
   // Only used by the collector thread.
   std::unique_ptr<StatsBlock> _pTotals;
   std::unique_ptr<std::array<OpenSecond, 2>> _pOpenSeconds;
+  // Null for a fixed rate.
+  std::unique_ptr<RateController> _pRate;
   amc::vector<LoadSecond> _series;
   std::optional<double> _cpuBase;
   std::optional<double> _lastFullSecondRate;
