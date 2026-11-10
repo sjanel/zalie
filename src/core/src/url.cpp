@@ -8,6 +8,7 @@
 #include "zalie/key-value.hpp"
 #include "zalie/raw-chars.hpp"
 #include "zalie/request.hpp"
+#include "zalie/string-utils.hpp"
 
 namespace zalie {
 
@@ -173,6 +174,32 @@ UrlTarget SplitUrlTarget(std::string_view url) noexcept {
   ret.authority = url.substr(0, targetPos);
   ret.target = targetPos == std::string_view::npos ? std::string_view{"/"} : url.substr(targetPos);
   return ret;
+}
+
+std::string_view UrlHost(std::string_view url) noexcept {
+  std::string_view authority = SplitUrlTarget(url).authority;
+  if (const std::size_t atPos = authority.rfind('@'); atPos != std::string_view::npos) {
+    authority.remove_prefix(atPos + 1);
+  }
+  if (authority.starts_with('[')) {
+    return authority.substr(1, authority.find(']') - 1);
+  }
+  return authority.substr(0, authority.find(':'));
+}
+
+bool IsLocalHost(std::string_view host) noexcept {
+  static constexpr std::string_view kLocalhost = "localhost";
+  static constexpr std::string_view kLoopbackPrefix = "127.";
+  if (EqualsIgnoreCase(host, kLocalhost) ||
+      (host.size() > kLocalhost.size() + 1 && host[host.size() - kLocalhost.size() - 1] == '.' &&
+       EqualsIgnoreCase(host.substr(host.size() - kLocalhost.size()), kLocalhost))) {
+    return true;
+  }
+  if (host == "::1") {
+    return true;
+  }
+  return host.starts_with(kLoopbackPrefix) && std::ranges::count(host, '.') == 3 && host.back() != '.' &&
+         std::ranges::all_of(host, [](char ch) { return ch == '.' || (ch >= '0' && ch <= '9'); });
 }
 
 }  // namespace zalie

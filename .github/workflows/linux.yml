@@ -84,3 +84,99 @@ jobs:
           name: zalie-linux-x86_64
           path: build/bin/zalie
           retention-days: 7
+
+  # Clang source-based coverage of the test suite, uploaded to Codecov (the README badge).
+  coverage:
+    name: Linux coverage (clang-23)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LLVM_VERSION: 23
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies and the LLVM toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${LINUX_PACKAGES}
+          wget -q https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh "${LLVM_VERSION}"
+          # llvm-profdata and llvm-cov
+          sudo apt-get install -y "llvm-${LLVM_VERSION}"
+
+      - name: Configure with source-based coverage
+        run: |
+          # NDEBUG: the never taken failure branch of each assert() is not a coverage gap.
+          flags="-DNDEBUG -fprofile-instr-generate -fcoverage-mapping"
+          cmake -S . -B build -G Ninja \
+            -D CMAKE_BUILD_TYPE=Debug \
+            -D CMAKE_C_COMPILER=clang-${LLVM_VERSION} \
+            -D CMAKE_CXX_COMPILER=clang++-${LLVM_VERSION} \
+            -D CMAKE_C_FLAGS="${flags}" \
+            -D CMAKE_CXX_FLAGS="${flags}" \
+            -D CMAKE_EXE_LINKER_FLAGS=-fprofile-instr-generate \
+            -D ZALIE_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: |
+          # One profile per process: ctest runs each test in its own.
+          export LLVM_PROFILE_FILE="${GITHUB_WORKSPACE}/build/profiles/%p.profraw"
+          ctest --test-dir build --output-on-failure --timeout 180 -j 4
+
+      - name: Merge the profiles and generate the reports
+        working-directory: build
+        run: |
+          llvm-profdata-${LLVM_VERSION} merge -sparse profiles/*.profraw -o coverage.profdata
+
+          # llvm-cov only reports the sources of the binaries it is given: all the test executables. It warns that some
+          # functions "have mismatched data": the placeholder records of the inline functions a binary does not use
+          # while another one runs them, harmless.
+          mapfile -t binaries < <(find tests -maxdepth 1 -type f -executable -name 'zalie_*_test' | sort)
+          if ((${#binaries[@]} == 0)); then
+            echo "::error::no test executable found"
+            exit 1
+          fi
+          args=(--instr-profile=coverage.profdata "${binaries[0]}")
+          for binary in "${binaries[@]:1}"; do
+            args+=(-object "${binary}")
+          done
+          # Zalie's sources only: not the tests, the dependencies or the generated sources.
+          args+=("${GITHUB_WORKSPACE}/src")
+
+          llvm-cov-${LLVM_VERSION} export --format=lcov "${args[@]}" > coverage.lcov
+          llvm-cov-${LLVM_VERSION} show --format=html --show-branches=count --output-dir=coverage-report "${args[@]}"
+          {
+            echo '```'
+            llvm-cov-${LLVM_VERSION} report "${args[@]}" | tail -n 1
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload to Codecov
+        if: ${{ env.CODECOV_TOKEN != '' }}
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ env.CODECOV_TOKEN }}
+          files: build/coverage.lcov
+          flags: unittests
+          name: zalie-tests
+          disable_search: true
+          fail_ci_if_error: true
+
+      - name: Codecov upload skipped
+        if: ${{ env.CODECOV_TOKEN == '' }}
+        run: |
+          echo "No CODECOV_TOKEN (pull request from a fork?): coverage only in the job artifact." >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload the coverage report (HTML + lcov)
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: |
+            build/coverage.lcov
+            build/coverage-report
+          retention-days: 7

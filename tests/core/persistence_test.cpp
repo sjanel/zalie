@@ -145,6 +145,7 @@ TEST(Persistence, SettingsRoundTripAndCardNormalization) {
   Settings settings;
   settings.theme.assign(std::string_view{"nuit"});
   settings.inspectorWidth = 512.5F;
+  settings.maxLoadConnections = 256;
   settings.inspectorCards.push_back({.id = RawChars32(kCardVariables), .visible = false});
   settings.inspectorCards.push_back({.id = RawChars32(std::string_view{"unknown"}), .visible = true});
   settings.inspectorCards.push_back({.id = RawChars32(kCardVariables), .visible = true});  // duplicate

@@ -4,14 +4,18 @@
 
 #include <gtest/gtest.h>
 #include <imgui.h>
+#include <imgui_internal.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "ui-test-fixture.hpp"
 #include "zalie/exchange.hpp"
@@ -21,6 +25,7 @@
 #include "zalie/syntax.hpp"
 #include "zalie/text-document.hpp"
 #include "zalie/ui/assets.hpp"
+#include "zalie/ui/chart.hpp"
 #include "zalie/ui/embedded.hpp"
 #include "zalie/ui/icons.hpp"
 #include "zalie/ui/text-view.hpp"
@@ -237,6 +242,207 @@ TEST_F(WidgetsTest, TexturesAreReleasedOnceDestroyed) {
     textures.collect();
   }
   SUCCEED();
+}
+
+TEST(ChartFormatting, Units) {
+  std::array<char, 32> buffer{};
+  using ui::ChartUnit;
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::count, 0, buffer), "0");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::count, 1.5, buffer), "1.5");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::count, 999.7, buffer), "1000");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::count, 1234, buffer), "1234");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::count, 12500, buffer), "12.5k");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::count, 3e6, buffer), "3M");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::count, 2.25e9, buffer), "2.25G");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::nanoseconds, 850, buffer), "850 ns");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::nanoseconds, 500'000, buffer), "500 \xC2\xB5s");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::nanoseconds, 1'500'000, buffer), "1.5 ms");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::nanoseconds, 2e9, buffer), "2 s");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::nanoseconds, 0, buffer), "0");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::bytes, 512, buffer), "512 B");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::bytes, 1536, buffer), "1.5 KB");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::bytes, 3.0 * 1024 * 1024, buffer), "3 MB");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::seconds, 30, buffer), "30 s");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::seconds, 120, buffer), "2 min");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::seconds, 150, buffer), "2:30");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::percent, 50, buffer), "50 %");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::percent, 99.9, buffer), "99.9 %");
+  EXPECT_EQ(ui::FormatChartValue(ChartUnit::percent, 99.99, buffer), "99.99 %");
+  std::array<char, 3> tiny{};
+  EXPECT_LE(ui::FormatChartValue(ChartUnit::nanoseconds, 1'500'000, tiny).size(), 3U);  // never overflowing
+}
+
+class ChartTest : public WidgetsTest {
+ protected:
+  ChartTest() {
+    for (int idx = 0; idx < 60; ++idx) {
+      x.push_back(static_cast<float>(idx + 1));
+      first.push_back(static_cast<float>(100 + (idx % 7)));
+      second.push_back(idx == 30 ? std::numeric_limits<float>::quiet_NaN() : static_cast<float>(idx));
+    }
+  }
+
+  // Draws the chart in a frame, and remembers where it is.
+  void draw(const ui::ChartOptions& options) {
+    const std::array series{
+        ui::ChartSeries{.name = "first", .values = first, .color = IM_COL32(200, 80, 60, 255)},
+        ui::ChartSeries{
+            .name = "second", .values = second, .color = IM_COL32(60, 80, 200, 255), .reduce = ui::ChartReduce::max}};
+    windowFrame([&] {
+      ui::Chart("##chart", x, series, state, options);
+      rectMin = ImGui::GetItemRectMin();
+      rectMax = ImGui::GetItemRectMax();
+    });
+  }
+
+  // Left click at a point.
+  void click(ImVec2 pos, const ui::ChartOptions& options) {
+    MouseMove(pos);
+    draw(options);
+    MouseButton(true);
+    draw(options);
+    MouseButton(false);
+    draw(options);
+  }
+
+  [[nodiscard]] static bool TooltipShown() {
+    for (const ImGuiWindow* pWindow : ImGui::GetCurrentContext()->Windows) {
+      if (pWindow->Active && std::string_view(pWindow->Name).starts_with("##Tooltip")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  std::vector<float> x;
+  std::vector<float> first;
+  std::vector<float> second;
+  ui::ChartState state;
+  ImVec2 rectMin;
+  ImVec2 rectMax;
+};
+
+TEST_F(ChartTest, EveryStyleAndScaleDraws) {
+  for (ui::ChartStyle style : {ui::ChartStyle::lines, ui::ChartStyle::stackedAreas}) {
+    for (ui::ChartScale scale : {ui::ChartScale::linear, ui::ChartScale::log}) {
+      state.invalidate();
+      draw({.title = "Title",
+            .x = {.unit = ui::ChartUnit::seconds},
+            .y = {.unit = ui::ChartUnit::nanoseconds, .scale = scale},
+            .height = 200,
+            .style = style});
+      EXPECT_GT(LastFrameVertices(), 500);
+      EXPECT_EQ(LastFrameNonFiniteVertices(), 0);
+    }
+  }
+  EXPECT_EQ(state.nbPoints, 60U);  // fewer points than pixels: all kept
+  EXPECT_FLOAT_EQ(rectMax.y - rectMin.y, 200.0F);
+
+  // Bars over the edges of buckets, on a logarithmic axis, with markers; a percentile curve.
+  const std::vector<float> edges{1000, 2000, 4000, 8000};
+  const std::vector<float> counts{5, 0, 12};
+  const std::array bars{ui::ChartSeries{.name = "count", .values = counts, .color = IM_COL32_WHITE}};
+  ui::ChartState barsState;
+  const auto drawBars = [&](std::span<const ui::ChartMarker> markers) {
+    windowFrame([&] {
+      ui::Chart("##bars", edges, bars, barsState,
+                {.markers = markers,
+                 .x = {.unit = ui::ChartUnit::nanoseconds, .scale = ui::ChartScale::log},
+                 .style = ui::ChartStyle::bars});
+    });
+    EXPECT_EQ(LastFrameNonFiniteVertices(), 0);
+    return LastFrameVertices();
+  };
+  const int withoutMarkers = drawBars({});
+  const std::array markers{ui::ChartMarker{.label = "p50", .x = 3000, .color = IM_COL32_WHITE}};
+  const int withMarker = drawBars(markers);
+  EXPECT_GT(withMarker, withoutMarkers);
+  // A marker the axis cannot place (0 on a logarithmic axis, a percentile not computed) is left out.
+  const std::array unplaced{markers[0], ui::ChartMarker{.label = "p90", .x = 0, .color = IM_COL32_WHITE},
+                            ui::ChartMarker{.label = "p99", .x = -5, .color = IM_COL32_WHITE}};
+  EXPECT_EQ(drawBars(unplaced), withMarker);
+  const std::vector<float> percentiles{0, 90, 99, 99.9F};
+  const std::vector<float> latencies{1e6, 2e6, 5e6, 4e7};
+  const std::array curve{ui::ChartSeries{.name = "latency", .values = latencies, .color = IM_COL32_WHITE}};
+  ui::ChartState curveState;
+  windowFrame([&] {
+    ui::Chart("##curve", percentiles, curve, curveState,
+              {.x = {.unit = ui::ChartUnit::percent, .scale = ui::ChartScale::nines},
+               .y = {.unit = ui::ChartUnit::nanoseconds, .scale = ui::ChartScale::log}});
+  });
+  // No data: the axes and a hint.
+  ui::ChartState emptyState;
+  windowFrame([&] { ui::Chart("##empty", {}, {}, emptyState, {}); });
+  EXPECT_EQ(emptyState.nbPoints, 0U);
+}
+
+TEST_F(ChartTest, MorePointsThanPixelsAreReducedOncePerChange) {
+  x.clear();
+  first.clear();
+  second.clear();
+  for (int idx = 0; idx < 100'000; ++idx) {
+    x.push_back(static_cast<float>(idx));
+    first.push_back(1.0F);
+    second.push_back(idx == 50'000 ? 1000.0F : 1.0F);  // one spike: kept by the max reduction
+  }
+  const ui::ChartOptions options{.y = {.unit = ui::ChartUnit::count}};
+  draw(options);
+  ASSERT_GT(state.nbPoints, 100U);
+  EXPECT_LE(state.nbPoints, 1000U);
+  const float* pSecond = state.points.data() + (2 * state.stride);
+  EXPECT_FLOAT_EQ(*std::max_element(pSecond, pSecond + state.nbPoints), 1000.0F);
+  const float* pFirst = state.points.data() + state.stride;
+  EXPECT_FLOAT_EQ(*std::max_element(pFirst, pFirst + state.nbPoints), 1.0F);  // the mean of ones
+
+  // Not prepared again while nothing changes.
+  state.points[0] = -1.0F;
+  draw(options);
+  EXPECT_FLOAT_EQ(state.points[0], -1.0F);
+  state.invalidate();
+  draw(options);
+  EXPECT_GT(state.points[0], 0.0F);  // the mean x of the first pixel column
+}
+
+TEST_F(ChartTest, LegendHoverAndZoom) {
+  const ui::ChartOptions options{.x = {.unit = ui::ChartUnit::seconds}, .height = 200, .zoomable = true};
+  draw(options);
+  // The legend is on the right of the title line: the last series ends at the right border.
+  click(ImVec2(rectMax.x - 4.0F, rectMin.y + 4.0F), options);
+  EXPECT_TRUE(state.isHidden(1));
+  EXPECT_FALSE(state.isHidden(0));
+  click(ImVec2(rectMax.x - 4.0F, rectMin.y + 4.0F), options);
+  EXPECT_FALSE(state.isHidden(1));
+
+  // Hovering the plot shows the values of the point.
+  const float midY = (rectMin.y + rectMax.y) * 0.5F;
+  MouseMove(ImVec2((rectMin.x + rectMax.x) * 0.5F, midY));
+  draw(options);
+  draw(options);
+  EXPECT_TRUE(TooltipShown());
+
+  // Dragging selects a window of x.
+  MouseMove(ImVec2(rectMin.x + 200.0F, midY));
+  draw(options);
+  MouseButton(true);
+  draw(options);
+  MouseMove(ImVec2(rectMin.x + 400.0F, midY));
+  draw(options);
+  MouseButton(false);
+  draw(options);
+  ASSERT_TRUE(state.zoomed());
+  EXPECT_GT(state.zoomMin, 1.0);
+  EXPECT_LT(state.zoomMax, 60.0);
+  draw(options);
+  EXPECT_LT(state.nbPoints, 60U);
+
+  // A double click shows everything again.
+  for (int idx = 0; idx < 2; ++idx) {
+    MouseButton(true);
+    draw(options);
+    MouseButton(false);
+    draw(options);
+  }
+  EXPECT_FALSE(state.zoomed());
 }
 
 }  // namespace

@@ -215,16 +215,17 @@ Later: weights per value and a Zipf distribution (a few hot keys, as in real tra
 ### Delivery
 
 Steps 1 to 3 make the first version (milestone 0.2), each one tested and usable by the next. Step 6 belongs to
-milestone 0.3.
+milestone 0.3. Steps 1 to 3 are done: see the [user guide](guide/performance.md).
 
-1. **Engine**: `LoadRunner` with the closed model, the limits (duration, requests, rate cap) and warm-up, the counting
-   sink, histograms, statuses and time series.
-2. **Parameters**: request template and encoding, generators (lists, ranges, random), combinations and seed, then data
-   files.
-3. **Dashboard**: the tab, the parameter table and its preview, the key numbers, the chart widget and the charts above,
-   the JSON export.
+1. **Engine** (done): `LoadRunner` with the closed model, the limits (duration, requests, rate cap) and warm-up, the
+   counting sink, histograms, statuses and time series.
+2. **Parameters** (done): request template and encoding, generators (lists, ranges, random), combinations and seed,
+   then data files.
+3. **Dashboard** (done): the tab, the parameter table and its preview, the key numbers, the chart widget and the charts
+   above, the JSON export.
 4. **Deeper runs**: open model, new connection per request, bodies from files through `sendfile` (with the file body
-   mode of milestone 0.4), breakdown by value, slowest and failed samples.
+   mode of milestone 0.4), breakdown by value, slowest and failed samples. Also left from step 3: the offer to move a
+   long list typed in the tab to a file.
 5. **Results**: saved runs, comparison, the other exports and the report, equivalent commands.
 6. **Automation**: assertions, thresholds, ramp-up stages and `zalie-cli bench`.
 

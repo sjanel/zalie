@@ -54,4 +54,10 @@ struct UrlTarget {
 // Splits an absolute URL into scheme, authority and request target. Without scheme, the URL is taken as authority.
 [[nodiscard]] UrlTarget SplitUrlTarget(std::string_view url) noexcept;
 
+// The host of a URL: its authority without user information, port and IPv6 brackets. A view into the URL.
+[[nodiscard]] std::string_view UrlHost(std::string_view url) noexcept;
+
+// Whether the host designates the local machine: localhost (and its subdomains), 127.0.0.0/8 or ::1.
+[[nodiscard]] bool IsLocalHost(std::string_view host) noexcept;
+
 }  // namespace zalie

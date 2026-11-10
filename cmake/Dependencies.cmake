@@ -68,6 +68,14 @@ set(CMAKE_POLICY_DEFAULT_CMP0194 OLD)
 
 FetchContent_MakeAvailable(aeronet glaze)
 
+# zstd already has the assembler option of ProjectSettings.cmake in its own CMAKE_C_FLAGS: a second copy would be a
+# mismatch for GCC's LTO plugin too.
+if(ZALIE_LTO_ASSEMBLER_OPTION AND TARGET libzstd_static)
+  get_target_property(ZALIE_ZSTD_OPTIONS libzstd_static COMPILE_OPTIONS)
+  list(REMOVE_ITEM ZALIE_ZSTD_OPTIONS "${ZALIE_LTO_ASSEMBLER_OPTION}")
+  set_target_properties(libzstd_static PROPERTIES COMPILE_OPTIONS "${ZALIE_ZSTD_OPTIONS}")
+endif()
+
 if(NOT TARGET aeronet::aeronet_client)
   add_library(aeronet::aeronet_client ALIAS aeronet_client)
 endif()

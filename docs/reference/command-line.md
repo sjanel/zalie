@@ -14,7 +14,7 @@ Paths are opened (`*.zalie.json`) or imported (Bruno collection folders or their
 | `--screenshot <file.png>` | Render a hidden window offscreen, save it as PNG, then exit. Used to generate the documentation images |
 | `--size <WxH>` | Window size, default `1440x900` |
 | `--frames <n>` | Frames rendered before the screenshot, default 10 |
-| `--demo <response\|pending>` | Demo state for the screenshots: a response shown without network, or a request in flight |
+| `--demo <response\|pending\|performance>` | Demo state for the screenshots: a response shown without network, a request in flight, or the Performance tab of a request after a run (made-up numbers) |
 | `--no-desktop-entry` | Linux: do not write the desktop entry at launch (see [Install](../getting-started/install.md#icon-in-the-task-bar-linux)) |
 | `--version` | Print the version |
 | `--help` | Print the help |

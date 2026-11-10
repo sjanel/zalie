@@ -125,5 +125,25 @@ TEST(Url, SplitUrlTarget) {
   EXPECT_EQ(target.target, "/p");
 }
 
+TEST(Url, UrlHost) {
+  EXPECT_EQ(UrlHost("https://api.example.com:8443/v1?x=1"), "api.example.com");
+  EXPECT_EQ(UrlHost("http://user:secret@db.local:5984/x"), "db.local");
+  EXPECT_EQ(UrlHost("http://[::1]:8080/"), "::1");
+  EXPECT_EQ(UrlHost("http://[fe80::1"), "fe80::1");
+  EXPECT_EQ(UrlHost("localhost:3000/health"), "localhost");
+  EXPECT_EQ(UrlHost("http://h?q=a@b"), "h");
+  EXPECT_EQ(UrlHost(""), "");
+}
+
+TEST(Url, IsLocalHost) {
+  for (const char* host : {"localhost", "LocalHost", "api.localhost", "127.0.0.1", "127.1.2.3", "::1"}) {
+    EXPECT_TRUE(IsLocalHost(host)) << host;
+  }
+  for (const char* host : {"", "example.com", "localhost.example.com", "notlocalhost", ".localhost", "127.0.0",
+                           "127.0.0.1.", "127.0.0.1x", "128.0.0.1", "10.0.0.1", "::2", "0.0.0.0"}) {
+    EXPECT_FALSE(IsLocalHost(host)) << host;
+  }
+}
+
 }  // namespace
 }  // namespace zalie

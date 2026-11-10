@@ -17,6 +17,8 @@ add_library(
   src/json-format.cpp
   src/json-path.cpp
   src/load-plan.cpp
+  src/load-preview.cpp
+  src/load-report.cpp
   src/load-runner.cpp
   src/paths.cpp
   src/persistence.cpp

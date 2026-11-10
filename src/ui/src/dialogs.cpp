@@ -343,6 +343,12 @@ void App::drawSettingsDialog() {
   settings.workers = std::clamp(settings.workers, 1U, 32U);
   TextDim("The last two settings apply at the next start.");
   ImGui::Spacing();
+  SectionTitle("PERFORMANCE RUNS");
+  ImGui::SetNextItemWidth(160.0F * scale);
+  ImGui::InputScalar("Connection limit", ImGuiDataType_U32, &settings.maxLoadConnections, &kOne);
+  settings.maxLoadConnections = std::min(settings.maxLoadConnections, 4096U);
+  TextDim("Each connection of a run is a thread. 0: the number of vCPUs.");
+  ImGui::Spacing();
   SectionTitle("DATA");
   TextDim(View(Concat({"Settings, history and collections: ", PathToUtf8(_workspace.home())})));
   ImGui::Spacing();

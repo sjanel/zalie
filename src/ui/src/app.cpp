@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -50,7 +51,10 @@ constexpr float kMaxScale = 2.5F;
 }  // namespace
 
 App::App(Workspace& workspace, Executor& executor)
-    : _workspace(workspace), _executor(executor), _startTime(std::chrono::steady_clock::now()) {
+    : _workspace(workspace),
+      _executor(executor),
+      _planCompiler(executor.options().wakeFn, executor.options().pWakeUserData),
+      _startTime(std::chrono::steady_clock::now()) {
   const Settings& settings = _workspace.settings();
   _theme = ParseTheme(settings.theme);
   if (const auto language = ParseSnippetLanguage(settings.snippetLanguage)) {
@@ -59,8 +63,12 @@ App::App(Workspace& workspace, Executor& executor)
 }
 
 App::~App() {
+  // All the runs stop together, then their threads are joined with the tabs.
   for (auto& pTab : _tabs) {
     Executor::Cancel(pTab->ticket);
+    if (pTab->perf && pTab->perf->runner) {
+      pTab->perf->runner->stop();
+    }
   }
 }
 
@@ -126,12 +134,16 @@ bool App::animating() const noexcept {
 void App::shutdown() {
   for (auto& pTab : _tabs) {
     Executor::Cancel(pTab->ticket);
+    if (pTab->perf && pTab->perf->runner) {
+      pTab->perf->runner->stop();
+    }
   }
   WorkspaceState& state = _workspace.state();
   state.openTabs.clear();
   state.activeTab = 0;
+  // Performance tabs are not restored: only the ids of the requests are saved.
   for (std::uint32_t i = 0; i < _tabs.size(); ++i) {
-    if (_tabs[i]->requestId != 0) {
+    if (_tabs[i]->requestId != 0 && !_tabs[i]->perf) {
       state.openTabs.push_back(_tabs[i]->requestId);
       if (i == _activeTab) {
         state.activeTab = _tabs[i]->requestId;
@@ -165,7 +177,16 @@ RequestTab* App::activeTab() noexcept {
 
 RequestTab* App::findTab(std::uint64_t requestId) noexcept {
   for (auto& pTab : _tabs) {
-    if (pTab->requestId == requestId && requestId != 0) {
+    if (pTab->requestId == requestId && requestId != 0 && !pTab->perf) {
+      return pTab.get();
+    }
+  }
+  return nullptr;
+}
+
+RequestTab* App::findTabByUid(std::uint64_t uid) noexcept {
+  for (auto& pTab : _tabs) {
+    if (pTab->uid == uid) {
       return pTab.get();
     }
   }
@@ -179,6 +200,17 @@ void App::setActiveTab(std::size_t index) noexcept {
 }
 
 Request* App::requestOf(RequestTab& tab) noexcept {
+  if (tab.requestId == 0 && tab.perf) {
+    // The Performance tab of an unsaved request: the request lives in its tab, until it is saved.
+    RequestTab* pSource = findTabByUid(tab.perf->sourceTabUid);
+    if (pSource == nullptr) {
+      return nullptr;
+    }
+    if (pSource->requestId == 0) {
+      return &pSource->scratch;
+    }
+    tab.requestId = pSource->requestId;
+  }
   if (tab.requestId == 0) {
     return &tab.scratch;
   }
@@ -191,7 +223,7 @@ OpenCollection* App::collectionOf(const RequestTab& tab) noexcept {
 
 void App::openRequest(std::uint64_t requestId) {
   for (std::uint32_t i = 0; i < _tabs.size(); ++i) {
-    if (_tabs[i]->requestId == requestId) {
+    if (_tabs[i]->requestId == requestId && !_tabs[i]->perf) {
       setActiveTab(i);
       return;
     }
@@ -218,6 +250,34 @@ RequestTab& App::newScratchTab() {
   return tab;
 }
 
+RequestTab& App::openPerformanceTab(std::size_t sourceIndex) {
+  assert(sourceIndex < _tabs.size());
+  RequestTab& source = *_tabs[static_cast<std::uint32_t>(sourceIndex)];
+  if (source.perf) {
+    setActiveTab(sourceIndex);
+    return source;
+  }
+  for (std::uint32_t i = 0; i < _tabs.size(); ++i) {
+    const RequestTab& other = *_tabs[i];
+    if (other.perf && ((source.requestId != 0 && other.requestId == source.requestId) ||
+                       (source.requestId == 0 && other.requestId == 0 && other.perf->sourceTabUid == source.uid))) {
+      setActiveTab(i);
+      return *_tabs[i];
+    }
+  }
+  auto pTab = std::make_unique<RequestTab>();
+  pTab->uid = _nextTabUid++;
+  pTab->requestId = source.requestId;
+  pTab->perf = std::make_unique<PerfTab>();
+  pTab->perf->sourceTabUid = source.requestId == 0 ? source.uid : 0;
+  pTab->perf->previewSeed = NewId();
+  // Right after its request.
+  const auto position = static_cast<std::uint32_t>(sourceIndex + 1);
+  _tabs.insert(_tabs.begin() + position, std::move(pTab));
+  setActiveTab(position);
+  return *_tabs[position];
+}
+
 void App::releaseImage(RequestTab& tab) {
   if (tab.pImage != nullptr) {
     _textures.release(tab.pImage);
@@ -233,6 +293,9 @@ void App::closeTab(std::size_t index) {
   RequestTab& tab = *_tabs[static_cast<std::uint32_t>(index)];
   Executor::Cancel(tab.ticket);
   releaseImage(tab);
+  if (tab.perf && tab.perf->runner) {
+    stopRunner(std::move(tab.perf->runner));
+  }
   _tabs.erase(_tabs.begin() + static_cast<std::ptrdiff_t>(index));
   if (_activeTab >= _tabs.size()) {
     _activeTab = _tabs.empty() ? 0 : _tabs.size() - 1;
@@ -245,6 +308,10 @@ void App::closeTab(std::size_t index) {
 void App::sendActiveTab() {
   RequestTab* pTab = activeTab();
   if (pTab == nullptr || pTab->pending()) {
+    return;
+  }
+  if (pTab->perf) {
+    pTab->perf->runRequested = !pTab->perf->running();
     return;
   }
   Request* pRequest = requestOf(*pTab);
@@ -262,6 +329,9 @@ void App::sendActiveTab() {
 void App::cancelActiveTab() {
   if (RequestTab* pTab = activeTab(); pTab != nullptr) {
     Executor::Cancel(pTab->ticket);
+    if (pTab->perf && pTab->perf->runner) {
+      pTab->perf->runner->stop();
+    }
   }
 }
 
@@ -372,6 +442,12 @@ bool App::importPath(const std::filesystem::path& path) {
 }
 
 void App::onFilesDropped(std::span<const std::filesystem::path> paths) {
+  // On a Performance tab, a file goes to the parameter row under the mouse at the next frame (a data file).
+  RequestTab* pTab = activeTab();
+  if (pTab != nullptr && pTab->perf && !paths.empty() && !pTab->perf->rows.empty()) {
+    pTab->perf->droppedPath = PathToUtf8(paths.front());
+    paths = paths.subspan(1);
+  }
   for (const std::filesystem::path& path : paths) {
     importPath(path);
   }
@@ -447,6 +523,7 @@ void App::handleShortcuts() {
 
 void App::frame() {
   pollExchanges();
+  pollRuns();
   if (_workspace.settings().autosave) {
     _workspace.autosave(kAutosaveDelay);
   }
@@ -651,6 +728,8 @@ void App::drawStatusBar(float height) {
   const float margin = 10.0F * scale;
   const std::size_t nbPending =
       static_cast<std::size_t>(std::ranges::count_if(_tabs, [](const auto& pTab) { return pTab->pending(); }));
+  const std::size_t nbRuns = static_cast<std::size_t>(
+      std::ranges::count_if(_tabs, [](const auto& pTab) { return pTab->perf && pTab->perf->running(); }));
   std::array<char, 96> buffer{};
   ScopedFont font(GetFonts().pUi, Fonts::kUiSize * 0.87F);
   const float textY = pos.y + ((height - ImGui::GetFontSize()) * 0.5F);
@@ -659,10 +738,16 @@ void App::drawStatusBar(float height) {
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - _startTime).count();
     const float spriteHeight = height - (4.0F * scale);
     x += _assets.drawSprite(pDrawList, Animation::run, seconds, ImVec2(x, pos.y + (2.0F * scale)), spriteHeight).x;
-    const auto result = std::format_to_n(buffer.data(), static_cast<std::ptrdiff_t>(buffer.size()),
-                                         "{} request{} in flight", nbPending, nbPending > 1 ? "s" : "");
-    pDrawList->AddText(ImVec2(x + (4.0F * scale), textY), pal.text, buffer.data(), result.out);
-  } else {
+    const std::string_view text = FormatTo(buffer, "{} request{} in flight", nbPending, nbPending > 1 ? "s" : "");
+    pDrawList->AddText(ImVec2(x + (4.0F * scale), textY), pal.text, text.data(), text.data() + text.size());
+    x += (20.0F * scale) + ImGui::CalcTextSize(text.data(), text.data() + text.size()).x;
+  }
+  if (nbRuns != 0) {
+    // No animation: a run refreshes the interface about 10 times per second, not at the rate of the screen.
+    const std::string_view text = FormatTo(buffer, "{} performance run{} in progress", nbRuns, nbRuns > 1 ? "s" : "");
+    DrawIcon(pDrawList, Icon::send, ImVec2(x + (6.0F * scale), pos.y + (height * 0.5F)), 12.0F * scale, pal.accent);
+    pDrawList->AddText(ImVec2(x + (16.0F * scale), textY), pal.text, text.data(), text.data() + text.size());
+  } else if (nbPending == 0) {
     DrawIcon(pDrawList, Icon::check, ImVec2(x + (6.0F * scale), pos.y + (height * 0.5F)), 12.0F * scale, pal.success);
     pDrawList->AddText(ImVec2(x + (16.0F * scale), textY), pal.textDim, "Ready");
   }

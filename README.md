@@ -17,6 +17,7 @@
   <a href="https://github.com/sjanel/zalie/actions/workflows/windows.yml"><img src="https://github.com/sjanel/zalie/actions/workflows/windows.yml/badge.svg?branch=main" alt="Windows"></a>
   <a href="https://github.com/sjanel/zalie/actions/workflows/clang-format.yml"><img src="https://github.com/sjanel/zalie/actions/workflows/clang-format.yml/badge.svg?branch=main" alt="clang-format"></a>
   <a href="https://github.com/sjanel/zalie/actions/workflows/docs.yml"><img src="https://github.com/sjanel/zalie/actions/workflows/docs.yml/badge.svg?branch=main" alt="Documentation"></a>
+  <a href="https://codecov.io/gh/sjanel/zalie"><img src="https://codecov.io/gh/sjanel/zalie/branch/main/graph/badge.svg" alt="Coverage"></a>
 </p>
 
 ![Zalie](docs/assets/screenshots/coton.png)

@@ -76,6 +76,8 @@ class Executor {
   // Waits until at least one exchange is completed, or the timeout. Returns false on timeout.
   bool waitForCompletion(std::chrono::milliseconds timeout);
 
+  [[nodiscard]] const Options& options() const noexcept { return _options; }
+
   // Number of submitted requests not polled yet.
   [[nodiscard]] std::size_t pendingCount() const noexcept { return _pending.load(std::memory_order_relaxed); }
 
