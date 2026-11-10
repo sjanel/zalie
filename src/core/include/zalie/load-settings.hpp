@@ -19,7 +19,9 @@ enum class ValueSource : std::uint8_t {
   randomString,
   uuid,
   timestamp,
-  dataFile
+  dataFile,
+  // A query parameter of the request left out of the run (the request keeps it).
+  omitted
 };
 
 // How a list, a range or a data file is read. 'shuffled' sends each value once per pass, in a random order.
@@ -40,7 +42,8 @@ enum class DataFileFormat : std::uint8_t { text, csv, jsonLines };
 struct LoadParameter {
   bool operator==(const LoadParameter&) const = default;
 
-  // The {{variable}} fed by this row or, with 'queryParameter', the key of a query parameter of the request.
+  // The {{variable}} fed by this row or, with 'queryParameter', the key of a query parameter: replaced in the URL of
+  // the run, appended to it when the request has none.
   RawChars32 name;
   RawChars32 fixedValue;
   // One value per line.
@@ -71,7 +74,8 @@ struct LoadParameter {
   ValueOrder order{ValueOrder::inOrder};
   TimestampFormat timestampFormat{TimestampFormat::seconds};
   DataFileFormat fileFormat{DataFileFormat::csv};
-  // 'name' is the key of a query parameter whose value is replaced for the run only: a normal Fetch keeps the original.
+  // 'name' is the key of a query parameter changed, added or left out for the run only: a normal Fetch keeps the
+  // request as written.
   bool queryParameter{false};
 
   using trivially_relocatable = AllTriviallyRelocatable<RawChars32>;

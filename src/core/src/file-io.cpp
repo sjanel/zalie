@@ -2,6 +2,7 @@
 
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <expected>
 #include <filesystem>
@@ -33,16 +34,17 @@ std::filesystem::path PathFromUtf8(std::string_view utf8) {
 }
 
 std::expected<RawChars, RawChars32> ReadFile(const std::filesystem::path& path) {
-  std::ifstream file(path, std::ios::binary | std::ios::ate);
+  std::ifstream file(path, std::ios::binary);
   if (!file) {
     return std::unexpected(ErrorMessage("cannot open", path, std::generic_category().message(errno)));
   }
-  const std::streamoff size = file.tellg();
-  if (size < 0) {
-    return std::unexpected(ErrorMessage("cannot read", path, "unknown size"));
+  // Not the position at the end of the stream: a directory opens on Linux, and its end is a huge position.
+  std::error_code errc;
+  const std::uintmax_t size = std::filesystem::file_size(path, errc);
+  if (errc) {
+    return std::unexpected(ErrorMessage("cannot read", path, errc.message()));
   }
   RawChars content(static_cast<std::size_t>(size));
-  file.seekg(0);
   if (size > 0 && !file.read(content.data(), static_cast<std::streamsize>(size))) {
     return std::unexpected(ErrorMessage("cannot read", path, std::generic_category().message(errno)));
   }

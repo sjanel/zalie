@@ -1,10 +1,14 @@
 #include "zalie/json-format.hpp"
 
+#include <aeronet/cctype.hpp>
+#include <aeronet/char-hexadecimal-converter.hpp>
 #include <amc/smallvector.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string_view>
 
+#include "json-scan.hpp"
 #include "zalie/raw-chars.hpp"
 
 namespace zalie {
@@ -12,12 +16,6 @@ namespace zalie {
 namespace {
 
 constexpr std::size_t kMaxDepth = 1024;
-
-constexpr bool IsJsonSpace(char ch) noexcept { return ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t'; }
-constexpr bool IsDigit(char ch) noexcept { return ch >= '0' && ch <= '9'; }
-constexpr bool IsHexDigit(char ch) noexcept {
-  return IsDigit(ch) || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
-}
 
 // Output policy appending the pretty-printed document.
 class PrettyWriter {
@@ -28,15 +26,12 @@ class PrettyWriter {
   void put(std::string_view str) { _out.append(str); }
 
   void newLine(std::size_t depth) {
-    static constexpr std::string_view kSpaces = "                                                                ";
-    std::size_t nbSpaces = depth * _indent;
+    const std::size_t nbSpaces = depth * _indent;
     _out.ensureAvailableCapacityExponential(nbSpaces + 1);
-    _out.unchecked_push_back('\n');
-    while (nbSpaces != 0) {
-      const std::size_t chunk = nbSpaces < kSpaces.size() ? nbSpaces : kSpaces.size();
-      _out.unchecked_append(kSpaces.substr(0, chunk));
-      nbSpaces -= chunk;
-    }
+    char* pData = _out.end();
+    *pData = '\n';
+    std::memset(pData + 1, ' ', nbSpaces);
+    _out.setEnd(pData + 1 + nbSpaces);
   }
 
   void keySeparator() { _out.append(std::string_view{": "}); }
@@ -188,7 +183,7 @@ class JsonFormatter {
         const char esc = _json[_pos];
         if (esc == 'u') {
           for (std::size_t i = 1; i <= 4; ++i) {
-            if (_pos + i >= _json.size() || !IsHexDigit(_json[_pos + i])) {
+            if (_pos + i >= _json.size() || !aeronet::IsHexDigit(_json[_pos + i])) {
               return false;
             }
           }
@@ -204,7 +199,7 @@ class JsonFormatter {
 
   bool digits() noexcept {
     const std::size_t begin = _pos;
-    while (_pos < _json.size() && IsDigit(_json[_pos])) {
+    while (_pos < _json.size() && aeronet::isdigit(_json[_pos])) {
       ++_pos;
     }
     return _pos != begin;

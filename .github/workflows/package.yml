@@ -1,0 +1,323 @@
+name: Packages
+
+# Release builds packaged for each platform: a Debian package (Ubuntu / Debian, x86_64), a portable zip (Windows x64)
+# and a disk image (macOS, Apple Silicon). Each one is installed or run on the runner before its upload as an
+# artifact. Then they are published (publish job):
+#   - a push to main of a development version (VERSION 'X.Y.Z-dev') replaces the 'dev' pre-release: one set of
+#     packages, the latest;
+#   - a 'vX.Y.Z' tag matching the VERSION file attaches them to the release of the tag (a draft if it does not exist).
+
+on:
+  push:
+    branches: [main]
+    # Releases only: never the 'dev' tag, moved by this workflow.
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+    # Not evaluated for tags: a release always builds.
+    paths-ignore: ["docs/**", "**.md", "mkdocs.yml", "requirements-docs.txt"]
+  pull_request:
+    branches: [main]
+    paths:
+      - "cmake/Packaging.cmake"
+      - "src/app/CMakeLists.txt"
+      - "packaging/**"
+      - ".github/workflows/package.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Never cancel the build of a release.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Read the version (and check the tag of a release)
+        id: version
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_REF}" == refs/tags/* && "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo "::error::the tag ${GITHUB_REF_NAME} does not match the VERSION file: expected v${version}"
+            exit 1
+          fi
+
+  linux:
+    name: Linux x86_64 (.deb)
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LLVM_VERSION: 22
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies and Clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
+          wget -q https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh "${LLVM_VERSION}"
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -D CMAKE_BUILD_TYPE=Release \
+            -D CMAKE_C_COMPILER="clang-${LLVM_VERSION}" \
+            -D CMAKE_CXX_COMPILER="clang++-${LLVM_VERSION}" \
+            -D ZALIE_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Package
+        run: |
+          cpack --config build/CPackConfig.cmake
+          dpkg-deb --info build/packages/*.deb
+          dpkg-deb --contents build/packages/*.deb
+
+      - name: Install and run on clean systems
+        # The oldest supported releases: the package requires glibc 2.38 and OpenSSL 3 (libssl3t64).
+        run: |
+          for image in ubuntu:24.04 debian:trixie; do
+            echo "::group::${image}"
+            docker run --rm -e DEBIAN_FRONTEND=noninteractive -v "${PWD}/build/packages:/packages:ro" "${image}" sh -ec '
+              apt-get update -qq
+              apt-get install -y -qq /packages/zalie_*.deb > /dev/null
+              zalie --version
+              test -f /usr/share/applications/zalie.desktop'
+            echo "::endgroup::"
+          done
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: zalie-linux-x86_64-deb
+          path: build/packages/*.deb*
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Windows x64 (.zip)
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -A x64 `
+            -D ZALIE_BUILD_TESTS=OFF `
+            -D OPENSSL_ROOT_DIR="$env:OPENSSL_ROOT_DIR"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Package
+        shell: pwsh
+        # The cpack next to cmake: Chocolatey has a cpack.exe of its own on the PATH of the runners.
+        run: |
+          $cpack = Join-Path (Split-Path (Get-Command cmake).Source) cpack.exe
+          & $cpack --config build/CPackConfig.cmake -C Release
+
+      - name: Run from the zip on a clean PATH
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $zip = Get-Item build/packages/*.zip
+          Expand-Archive $zip.FullName -DestinationPath unpacked
+          $dir = Join-Path unpacked $zip.BaseName
+          Get-ChildItem $dir | Format-Table Name, Length
+          foreach ($dll in 'libssl-*.dll', 'libcrypto-*.dll', 'vcruntime140.dll', 'msvcp140.dll') {
+            if (-not (Test-Path (Join-Path $dir $dll))) { throw "$dll is missing from the package" }
+          }
+          # No error dialog for a missing DLL (inherited by the child process): a failure, not a hang.
+          Add-Type -Namespace Win32 -Name ErrorMode `
+            -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetErrorMode(uint mode);'
+          [Win32.ErrorMode]::SetErrorMode(1) | Out-Null
+          # Only the system directories: the DLLs must come from the package, not from OpenSSL or Git on the runner.
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $process = Start-Process -FilePath (Join-Path $dir zalie.exe) -ArgumentList '--version' -Wait -PassThru -NoNewWindow
+          if ($process.ExitCode -ne 0) { throw "zalie.exe --version exited with $($process.ExitCode)" }
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: zalie-windows-x64-zip
+          path: build/packages/*.zip*
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: macOS arm64 (.dmg)
+    needs: version
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      DMG: zalie-${{ needs.version.outputs.version }}-macos-arm64.dmg
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set compilers and install dylibbundler
+        # As the macOS workflow: C++ with Homebrew GCC, C and Objective-C (GLFW's Cocoa backend) with Apple Clang.
+        run: |
+          {
+            echo "CXX=g++-15"
+            echo "APPLE_CLANG=$(xcrun --find clang)"
+            echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)"
+          } >> "$GITHUB_ENV"
+          brew install dylibbundler
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -D CMAKE_BUILD_TYPE=Release \
+            -D CMAKE_CXX_COMPILER="${CXX}" \
+            -D CMAKE_C_COMPILER="${APPLE_CLANG}" \
+            -D CMAKE_OBJC_COMPILER="${APPLE_CLANG}" \
+            -D CMAKE_OSX_SYSROOT="${SDKROOT}" \
+            -D OPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
+            -D ZALIE_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Make the application self-contained
+        run: |
+          cmake --install build --prefix stage --strip
+          app=stage/zalie.app
+
+          # Icon of the Finder and the Dock, from the PNGs of the logo; sharp rendering on Retina displays.
+          iconset="${RUNNER_TEMP}/zalie.iconset"
+          mkdir -p "${iconset}" "${app}/Contents/Resources"
+          for size in 16 32 128 256 512; do
+            cp "assets/logo/zalie-logo-${size}.png" "${iconset}/icon_${size}x${size}.png"
+          done
+          for size in 16 32 128 256; do
+            cp "assets/logo/zalie-logo-$((size * 2)).png" "${iconset}/icon_${size}x${size}@2x.png"
+          done
+          iconutil --convert icns --output "${app}/Contents/Resources/zalie.icns" "${iconset}"
+          plutil -replace CFBundleIconFile -string zalie.icns "${app}/Contents/Info.plist"
+          plutil -replace NSHighResolutionCapable -bool true "${app}/Contents/Info.plist"
+
+          # Copy the Homebrew libraries (GCC runtime, OpenSSL) into the bundle and point the executable to them.
+          dylibbundler --overwrite-dir --bundle-deps --fix-file "${app}/Contents/MacOS/zalie" \
+            --dest-dir "${app}/Contents/Frameworks" --install-path @executable_path/../Frameworks/ \
+            --search-path "$(dirname "$(${CXX} -print-file-name=libstdc++.6.dylib)")" \
+            --search-path "$(brew --prefix openssl@3)/lib" < /dev/null
+          # GCC links the executable with several LC_RPATH (@loader_path and its library directories) and dylibbundler
+          # rewrites each of them to the same path: dyld aborts on a duplicate LC_RPATH. Keep a single one.
+          rpath=@executable_path/../Frameworks/
+          for binary in "${app}/Contents/MacOS/zalie" "${app}"/Contents/Frameworks/*.dylib; do
+            if [ "$(otool -l "${binary}" | grep -cF "path ${rpath} (")" -gt 1 ]; then
+              while otool -l "${binary}" | grep -qF "path ${rpath} ("; do
+                install_name_tool -delete_rpath "${rpath}" "${binary}"
+              done
+              install_name_tool -add_rpath "${rpath}" "${binary}"
+            fi
+          done
+          otool -l "${app}/Contents/MacOS/zalie" | grep -A2 LC_RPATH || true
+          otool -L "${app}/Contents/MacOS/zalie" "${app}"/Contents/Frameworks/*.dylib
+          if otool -L "${app}/Contents/MacOS/zalie" "${app}"/Contents/Frameworks/*.dylib | grep -E '/opt/homebrew|/usr/local'; then
+            echo "::error::the application still references Homebrew libraries"
+            exit 1
+          fi
+
+          # Ad-hoc signature (required on Apple Silicon): the libraries first, then the bundle.
+          codesign --force --sign - "${app}"/Contents/Frameworks/*.dylib
+          codesign --force --sign - "${app}"
+          codesign --verify --strict --verbose=2 "${app}"
+          "${app}/Contents/MacOS/zalie" --version
+
+      - name: Package
+        run: |
+          ln -s /Applications stage/Applications
+          # hdiutil sometimes fails with 'Resource busy' on the runners: retry.
+          for attempt in 1 2 3; do
+            hdiutil create -volname Zalie -srcfolder stage -format UDZO -ov "${DMG}" && break
+            if ((attempt == 3)); then exit 1; fi
+            sleep 10
+          done
+          shasum -a 256 "${DMG}" > "${DMG}.sha256"
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: zalie-macos-arm64-dmg
+          path: zalie-*.dmg*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish (${{ github.ref_type == 'tag' && 'release' || 'dev pre-release' }})
+    if: >-
+      ${{ github.ref_type == 'tag' || (github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+      endsWith(needs.version.outputs.version, '-dev')) }}
+    needs: [version, linux, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download the packages
+        uses: actions/download-artifact@v8
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: Release notes from the changelog
+        # The section of this version in docs/CHANGELOG.md ('## [X.Y.Z] - ...', also for X.Y.Z-dev), without its title.
+        run: |
+          {
+            if [[ "${GITHUB_REF_TYPE}" != tag ]]; then
+              echo "Development build of Zalie ${VERSION}, from ${GITHUB_SHA}: replaced by each push to \`main\`."
+              echo
+              echo "## Changes since the last release"
+            fi
+            awk -v title="## [${VERSION%-dev}]" '
+              /^## \[/ { if (found) exit; found = index($0, title) == 1; next }
+              found' docs/CHANGELOG.md
+          } > notes.md
+          cat notes.md
+
+      - name: Attach the packages to the release
+        if: ${{ github.ref_type == 'tag' }}
+        # Created as a draft (review the notes and the packages, then publish it from the Releases page), or the
+        # release already made from the GitHub interface.
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" packages/* --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" packages/* --draft --verify-tag \
+              --title "Zalie ${VERSION}" --notes-file notes.md
+          fi
+
+      - name: Replace the dev pre-release
+        if: ${{ github.ref_type != 'tag' }}
+        # Deleted and created again on the new commit, rather than moving its tag: the token of the workflow may not
+        # move a tag across commits that change workflows.
+        run: |
+          gh release delete dev --yes --cleanup-tag 2> /dev/null || true
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/dev" 2> /dev/null || true
+          gh release create dev packages/* --prerelease --target "${GITHUB_SHA}" \
+            --title "Zalie ${VERSION} (development build)" --notes-file notes.md

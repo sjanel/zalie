@@ -44,7 +44,7 @@ variables), and so does every query parameter of its URL: no need to write `{{..
 
 | Column | Content |
 | ------ | ------- |
-| Parameter | The variable, or the query parameter (marked "query"). A name in orange has a problem, told below the settings |
+| Parameter | The variable, or the query parameter (marked "query", or "added" when only the run sends it). A name in orange has a problem, told below the settings |
 | Source | **Default** sends what a normal Fetch sends: the value of the environment or of the collection, or the value written in the URL for a query parameter. Any other source varies the values for the run |
 | Values | A summary of the values |
 | Order | In order, at random, or shuffled (each value once per pass, in a random order) |
@@ -52,6 +52,12 @@ variables), and so does every query parameter of its URL: no need to write `{{..
 | Samples | The first values the run will send |
 
 Varying a query parameter only applies to the run: the request keeps its value, a normal Fetch keeps sending it.
+The same goes for the buttons at the end of the rows:
+
+- The cross of a query parameter leaves it out of the run (source **Not sent**). Its row stays, dimmed, and its plus
+  sends it again.
+- **+ Query parameter**, below the table, adds a query parameter that the request does not have: type its key in its
+  row, choose its source, and the run appends it to the URL. Its cross removes it.
 
 Click a row to edit its source below the table:
 
@@ -66,6 +72,10 @@ Click a row to edit its source below the table:
 | UUID | | a random version 4 UUID, derived from the seed |
 | Timestamp | Unix seconds, milliseconds or ISO 8601 | the time of the request |
 | Data file | path, format, column | `users.csv`, column `id` |
+| Not sent | | a query parameter of the request left out of the run |
+
+A range starts valid: from the value of the query parameter when it fits (`page=3` gives 3 to 102, `dates=2026-12-18`
+gives a week from that day, in the same shape), otherwise from its defaults, today for dates.
 
 The dynamic variables (`{{$randomUUID}}`, `{{$timestamp}}`...) are evaluated again for every request.
 
@@ -103,9 +113,21 @@ During a run the dashboard refreshes about 10 times per second, not at the rate 
 the CPU to the connections, and is idle again once the run is over. The status bar tells how many runs are in
 progress.
 
+<div class="zalie-hero" markdown>
+
+![Zalie eating her meat](../assets/zalie-eat.gif){ width="240" }
+
+</div>
+
+Meanwhile Zalie eats a big piece of meat beside the status line, as fast as she can. The meat goes as the run
+progresses (by time or by requests, whichever limit is closer), so the bare bone means the run is nearly over; without
+a limit, a new piece comes every 8 seconds. Once the run is over, she naps. She chomps at the pace of the dashboard
+refreshes: the animation costs no extra frame.
+
 ## Dashboard
 
-- **Status line**: phase (warming up, running, finished), measured time, connections, requests in flight and seed. A
+- **Status line**, beside Zalie: phase (warming up, running, finished), measured time, connections, requests in
+  flight and seed, then the progress of the run. A
   warning appears when the client, not the server, is the bottleneck (its CPU is above 90 % of what its connections
   can use): the numbers then measure Zalie more than the server.
 - **Key numbers**: requests per second (current during the run, mean once over, and the peak), median, p99 and maximum

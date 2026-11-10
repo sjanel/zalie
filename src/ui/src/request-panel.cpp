@@ -327,17 +327,7 @@ void App::drawUrlBar(RequestTab& tab, Request& request) {
     if (PrimaryButton("##fetch", ImVec2(sendWidth, 0))) {
       sendActiveTab();
     }
-    const ImVec2 min = ImGui::GetItemRectMin();
-    const ImVec2 max = ImGui::GetItemRectMax();
-    const float iconSize = ImGui::GetFontSize() * 0.95F;
-    const float gap = 6.0F * scale;
-    const float textWidth = ImGui::CalcTextSize("Fetch").x;
-    const float startX = std::floor(((min.x + max.x) * 0.5F) - ((iconSize + gap + textWidth) * 0.5F));
-    const float midY = (min.y + max.y) * 0.5F;
-    ImDrawList* pDrawList = ImGui::GetWindowDrawList();
-    DrawIcon(pDrawList, Icon::paw, ImVec2(startX + (iconSize * 0.5F), midY), iconSize, pal.onAccent);
-    pDrawList->AddText(ImVec2(startX + iconSize + gap, std::floor(midY - (ImGui::GetFontSize() * 0.5F))), pal.onAccent,
-                       "Fetch");
+    DrawItemIconLabel(Icon::paw, ImGui::GetFontSize() * 0.95F, "Fetch", pal.onAccent);
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip(tab.pending() ? "Cancel (Esc)" : "Fetch (Ctrl+Enter)");
@@ -932,13 +922,10 @@ void App::UpdateJsonFilter(RequestTab& tab, bool submitted) {
   tab.filteredPrettyLines.build(tab.filteredPretty, SyntaxLanguage::json);
 
   const std::size_t nbMatches = result->matches.size();
-  AppendInt(tab.filterMessage, nbMatches);
-  AppendAll(tab.filterMessage, std::string_view{nbMatches == 1 ? " match" : " matches"},
-            std::string_view{result->truncated ? " (or more)" : ""}, std::string_view{" for "}, query);
+  AppendAll(tab.filterMessage, nbMatches, std::string_view{nbMatches == 1 ? " match" : " matches"},
+            std::string_view{result->truncated ? " (or more)" : ""}, " for ", query);
   if (written < nbMatches) {
-    AppendAll(tab.filterMessage, std::string_view{" - the first "});
-    AppendInt(tab.filterMessage, written);
-    AppendAll(tab.filterMessage, std::string_view{" are shown"});
+    AppendAll(tab.filterMessage, " - the first ", written, " are shown");
   }
 }
 

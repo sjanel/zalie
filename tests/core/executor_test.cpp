@@ -304,6 +304,28 @@ TEST_F(ExecutorTest, ConnectionRefusedAndInvalidUrls) {
   }
 }
 
+#ifdef AERONET_ENABLE_OPENSSL
+TEST_F(ExecutorTest, TlsHandshakeFailure) {
+  // https to the plain HTTP test server: the handshake fails, the message tells what to try.
+  ResolvedRequest req = makeRequest("/json");
+  const std::string httpsUrl = "https" + std::string(req.url).substr(4);
+  req.url = req.strings.store(httpsUrl);
+  req.settings.timeoutMs = 2000;
+  Exchange exchange = send(std::move(req));
+  EXPECT_EQ(exchange.response.state, ExchangeState::failed);
+  EXPECT_TRUE(exchange.response.error.contains("TLS handshake failed. For a self-signed certificate"))
+      << exchange.response.error;
+
+  ResolvedRequest unverified = makeRequest("/json");
+  unverified.url = unverified.strings.store(httpsUrl);
+  unverified.settings.timeoutMs = 2000;
+  unverified.settings.verifyTls = false;
+  exchange = send(std::move(unverified));
+  EXPECT_EQ(exchange.response.state, ExchangeState::failed);
+  EXPECT_EQ(exchange.response.error, "TLS handshake failed.");
+}
+#endif
+
 TEST_F(ExecutorTest, ManyConcurrentRequests) {
   amc::vector<std::uint64_t> tickets;
   for (int i = 0; i < 40; ++i) {

@@ -91,8 +91,8 @@ A request can carry the settings of its load test in a `load` object. It is left
 | `load.connections` | number of connections, 0 for the number of vCPUs |
 | `load.seed` | equal seeds give equal requests, timestamps aside. 0 picks a new one for each run |
 | `load.combine` | `independent`, `together`, `all-combinations` |
-| `load.parameters[].name` | the `{{variable}}` fed by this row or, with `queryParameter`, the key of a query parameter replaced for the run only |
-| `load.parameters[].source` | `fixed`, `list`, `integer-range`, `decimal-range`, `date-range`, `random-string`, `uuid`, `timestamp`, `data-file` |
+| `load.parameters[].name` | the `{{variable}}` fed by this row or, with `queryParameter`, the key of a query parameter replaced for the run only (appended to the URL of the run when the request has none) |
+| `load.parameters[].source` | `fixed`, `list`, `integer-range`, `decimal-range`, `date-range`, `random-string`, `uuid`, `timestamp`, `data-file`, or `omitted` for a query parameter left out of the run |
 | `load.parameters[].order` | `in-order`, `random`, `shuffled` |
 | `load.parameters[].timestampFormat` | `seconds`, `milliseconds`, `iso8601` |
 | `load.parameters[].fileFormat` | `text`, `csv`, `json-lines` |

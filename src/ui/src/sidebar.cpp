@@ -52,12 +52,11 @@ void LoadHistoryEntry(const HistoryEntry& entry, Request& request) {
 
 bool App::matchesFilter(const Request& request) const {
   const std::string_view filter = Trim(_filter);
-  return filter.empty() || FindIgnoreCase(request.name, filter) != std::string_view::npos ||
-         FindIgnoreCase(request.url, filter) != std::string_view::npos;
+  return filter.empty() || ContainsIgnoreCase(request.name, filter) || ContainsIgnoreCase(request.url, filter);
 }
 
 bool App::folderMatchesFilter(const Folder& folder) const {
-  if (Trim(_filter).empty() || FindIgnoreCase(folder.name, Trim(_filter)) != std::string_view::npos) {
+  if (Trim(_filter).empty() || ContainsIgnoreCase(folder.name, Trim(_filter))) {
     return true;
   }
   return std::ranges::any_of(folder.requests, [this](const Request& request) { return matchesFilter(request); }) ||
@@ -540,7 +539,7 @@ void App::drawHistory() {
   };
   if (!filter.empty()) {
     for (std::uint32_t row = 0; row < history.entries().size(); ++row) {
-      if (FindIgnoreCase(history.entries()[row].url, filter) != std::string_view::npos) {
+      if (ContainsIgnoreCase(history.entries()[row].url, filter)) {
         drawEntry(row);
       }
     }

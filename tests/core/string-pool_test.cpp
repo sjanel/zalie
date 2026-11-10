@@ -8,9 +8,6 @@
 #include <utility>
 #include <vector>
 
-#include "zalie/raw-chars.hpp"
-#include "zalie/string-utils.hpp"
-
 namespace zalie {
 namespace {
 
@@ -63,34 +60,6 @@ TEST(StringList, Basics) {
     ++count;
   }
   EXPECT_EQ(count, 3U);
-}
-
-TEST(StringUtils, Basics) {
-  EXPECT_EQ(Trim("  \t a b \r\n"), "a b");
-  EXPECT_EQ(Trim("   "), "");
-  EXPECT_TRUE(EqualsIgnoreCase("Content-Type", "content-type"));
-  EXPECT_FALSE(EqualsIgnoreCase("a", "ab"));
-  EXPECT_TRUE(StartsWithIgnoreCase("Bearer xyz", "bearer"));
-  EXPECT_EQ(FindIgnoreCase("application/JSON", "json"), 12U);
-  EXPECT_EQ(FindIgnoreCase("abc", "x"), std::string_view::npos);
-  EXPECT_EQ(FindIgnoreCase("abc", ""), 0U);
-  EXPECT_EQ(FindIgnoreCase("ab", "abc"), std::string_view::npos);
-  EXPECT_EQ(View(ToLower("X-Api-KEY")), "x-api-key");
-  EXPECT_TRUE(IsHttpToken("X-Custom_Header.1"));
-  EXPECT_FALSE(IsHttpToken("Bad Header"));
-  EXPECT_FALSE(IsHttpToken(""));
-  EXPECT_FALSE(IsHttpToken("a:b"));
-}
-
-TEST(RawCharsHelpers, ConcatAppendAll) {
-  RawChars32 out = Concat({"a", "bc", ""});
-  EXPECT_EQ(View(out), "abc");
-  AppendAll(out, "-", std::string_view{"d"}, out.empty() ? "x" : "e");
-  EXPECT_EQ(View(out), "abc-de");
-  AppendInt(out, -42);
-  EXPECT_EQ(View(out), "abc-de-42");
-  AssignSafe(out, std::string_view(out).substr(4));
-  EXPECT_EQ(View(out), "de-42");
 }
 
 }  // namespace

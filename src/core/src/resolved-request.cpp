@@ -1,6 +1,6 @@
 #include "zalie/resolved-request.hpp"
 
-#include <aeronet/base64.hpp>
+#include <aeronet/string-equal-ignore-case.hpp>
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "zalie/collection.hpp"
+#include "zalie/encoding.hpp"
 #include "zalie/key-value.hpp"
 #include "zalie/raw-chars.hpp"
 #include "zalie/request.hpp"
@@ -79,35 +80,19 @@ std::size_t EstimateStringsSize(const Request& request, const Collection& collec
   return size + (size / 4) + kSlack;
 }
 
-// "<prefix><base64(data)>", stored in the pool.
-std::string_view PrefixedBase64(StringPool& strings, RawChars32& scratch, std::string_view prefix,
-                                std::string_view data) {
-  const std::size_t encodedLen = aeronet::B64EncodedLen(data.size());
-  scratch.clear();
-  scratch.ensureAvailableCapacity(prefix.size() + encodedLen);
-  scratch.unchecked_append(prefix);
-  char* pEncoded = scratch.data() + scratch.size();
-  aeronet::B64Encode(data, pEncoded, pEncoded + encodedLen);
-  scratch.setEnd(pEncoded + encodedLen);
-  return strings.store(scratch);
-}
-
 // Appends "name=value" (percent-encoded) to the query string of the URL.
 void AppendQueryParam(ResolvedRequest& out, std::string_view name, std::string_view value) {
   const UrlQuerySplit split = SplitUrlQuery(out.url);
   RawChars32 url(out.url.size() + name.size() + value.size() + 2);
-  url.unchecked_append(split.base);
-  url.push_back('?');
+  AppendAll(url, split.base, '?');
   if (!split.query.empty()) {
-    url.append(split.query);
-    url.push_back('&');
+    AppendAll(url, split.query, '&');
   }
   AppendUrlEncoded(name, url);
   url.push_back('=');
   AppendUrlEncoded(value, url);
   if (!split.fragment.empty()) {
-    url.push_back('#');
-    url.append(split.fragment);
+    AppendAll(url, '#', split.fragment);
   }
   out.url = out.strings.store(url);
 }
@@ -123,7 +108,10 @@ void ApplyAuth(const Auth& auth, Resolver& resolver, ResolvedRequest& out) {
       resolver.resolveInto(auth.username, credentials);
       credentials.push_back(':');
       resolver.resolveInto(auth.password, credentials);
-      out.headers.push_back({kAuthorization, PrefixedBase64(out.strings, resolver.scratch(), "Basic ", credentials)});
+      RawChars32& value = resolver.scratch();
+      value.clear();
+      AppendAll(value, "Basic ", Base64(credentials));
+      out.headers.push_back({kAuthorization, out.strings.store(value)});
       break;
     }
     case AuthMode::bearer:
@@ -157,8 +145,8 @@ void AddHeaders(const KeyValues& headers, Resolver& resolver, ResolvedRequest& o
     const std::string_view name = resolver.resolve(key);
     const std::string_view value = resolver.resolve(header.value);
     // A request header replaces a collection header of the same name.
-    const auto it =
-        std::ranges::find_if(out.headers, [name](const HeaderView& line) { return EqualsIgnoreCase(line.name, name); });
+    const auto it = std::ranges::find_if(
+        out.headers, [name](const HeaderView& line) { return aeronet::CaseInsensitiveEqual(line.name, name); });
     if (it != out.headers.end()) {
       it->value = value;
     } else {
@@ -170,13 +158,14 @@ void AddHeaders(const KeyValues& headers, Resolver& resolver, ResolvedRequest& o
 }  // namespace
 
 std::string_view FindHeader(std::span<const HeaderView> headers, std::string_view name) noexcept {
-  const auto it =
-      std::ranges::find_if(headers, [name](const HeaderView& line) { return EqualsIgnoreCase(line.name, name); });
+  const auto it = std::ranges::find_if(
+      headers, [name](const HeaderView& line) { return aeronet::CaseInsensitiveEqual(line.name, name); });
   return it == headers.end() ? std::string_view{} : it->value;
 }
 
 bool HasHeader(std::span<const HeaderView> headers, std::string_view name) noexcept {
-  return std::ranges::any_of(headers, [name](const HeaderView& line) { return EqualsIgnoreCase(line.name, name); });
+  return std::ranges::any_of(headers,
+                             [name](const HeaderView& line) { return aeronet::CaseInsensitiveEqual(line.name, name); });
 }
 
 VariableScope MakeScope(const Collection& collection, int environmentIndex) {

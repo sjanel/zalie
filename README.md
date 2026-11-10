@@ -15,6 +15,7 @@
   <a href="https://github.com/sjanel/zalie/actions/workflows/linux.yml"><img src="https://github.com/sjanel/zalie/actions/workflows/linux.yml/badge.svg?branch=main" alt="Linux"></a>
   <a href="https://github.com/sjanel/zalie/actions/workflows/macos.yml"><img src="https://github.com/sjanel/zalie/actions/workflows/macos.yml/badge.svg?branch=main" alt="macOS"></a>
   <a href="https://github.com/sjanel/zalie/actions/workflows/windows.yml"><img src="https://github.com/sjanel/zalie/actions/workflows/windows.yml/badge.svg?branch=main" alt="Windows"></a>
+  <a href="https://github.com/sjanel/zalie/actions/workflows/package.yml"><img src="https://github.com/sjanel/zalie/actions/workflows/package.yml/badge.svg?branch=main" alt="Packages"></a>
   <a href="https://github.com/sjanel/zalie/actions/workflows/clang-format.yml"><img src="https://github.com/sjanel/zalie/actions/workflows/clang-format.yml/badge.svg?branch=main" alt="clang-format"></a>
   <a href="https://github.com/sjanel/zalie/actions/workflows/docs.yml"><img src="https://github.com/sjanel/zalie/actions/workflows/docs.yml/badge.svg?branch=main" alt="Documentation"></a>
   <a href="https://codecov.io/gh/sjanel/zalie"><img src="https://codecov.io/gh/sjanel/zalie/branch/main/graph/badge.svg" alt="Coverage"></a>
@@ -39,6 +40,12 @@ Coton de Tulear, who runs across the screen while your requests are in flight.
 - JSONPath filter of JSON responses (`$.results[*].id`, `$..price`), the response below or beside the request.
 - Idle means idle: no frame is drawn while nothing changes.
 - Two themes, Coton (light) and Nuit (dark). Linux, macOS, Windows. Local only: no account, no cloud.
+
+## Download
+
+Packages for Debian / Ubuntu (`.deb`), Windows (zip) and macOS (disk image, Apple Silicon) are attached to each
+[release](https://github.com/sjanel/zalie/releases): see the
+[installation guide](https://sjanel.github.io/zalie/getting-started/install/#download).
 
 ## Build
 

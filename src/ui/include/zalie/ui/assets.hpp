@@ -38,8 +38,8 @@ class TextureStore {
   amc::vector<Released> _released;
 };
 
-// Layout of the sprite sheet (assets/sprites/zalie-sprites.png, see tools/generate-assets.py).
-enum class Animation : std::uint8_t { run, sleep };
+// Animations of the sprite sheet (assets/sprites/zalie-sprites.png, see tools/generate-assets.py).
+enum class Animation : std::uint8_t { run, sleep, eat };
 
 // Fonts and images of the app, embedded in the executable.
 class Assets {
@@ -52,13 +52,21 @@ class Assets {
   ImVec2 drawSprite(ImDrawList* pDrawList, Animation animation, double seconds, ImVec2 pos, float height,
                     bool flipped = false) const;
 
+  // Draws Zalie eating her piece of meat at time 'seconds', 'eaten' (in [0, 1]) of it gone, like drawSprite.
+  ImVec2 drawMeal(ImDrawList* pDrawList, double seconds, float eaten, ImVec2 pos, float height) const;
+
   [[nodiscard]] ImTextureRef logo() const noexcept { return _pLogo == nullptr ? ImTextureRef{} : _pLogo->GetTexRef(); }
   [[nodiscard]] ImTextureRef logoSmall() const noexcept {
     return _pLogoSmall == nullptr ? ImTextureRef{} : _pLogoSmall->GetTexRef();
   }
+  [[nodiscard]] ImTextureRef sprites() const noexcept {
+    return _pSprites == nullptr ? ImTextureRef{} : _pSprites->GetTexRef();
+  }
   [[nodiscard]] bool loaded() const noexcept { return _pSprites != nullptr; }
 
  private:
+  void drawFrame(ImDrawList* pDrawList, int column, int row, ImVec2 pos, float height, bool flipped) const;
+
   ImTextureData* _pLogo{nullptr};
   ImTextureData* _pLogoSmall{nullptr};
   ImTextureData* _pSprites{nullptr};

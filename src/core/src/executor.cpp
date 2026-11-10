@@ -76,7 +76,7 @@ void CopyHead(const aeronet::HttpResponse& head, const aeronet::ResponseBodyInfo
     }
     if (pInfo->sizeKnown()) {
       RawChars32 length;
-      AppendInt(length, pInfo->size);
+      AppendAll(length, pInfo->size);
       response.headers.push_back({"content-length", strings.store(length)});
     }
   } else if (const std::string_view contentType = head.headerValueOrEmpty("content-type");
@@ -144,9 +144,9 @@ std::string_view ErrorMessage(aeronet::HttpClientErrc errc, const ResolvedReques
                    "request settings."
                  : "TLS handshake failed.";
     case aeronet::HttpClientErrc::timeout: {
-      RawChars32 message(std::string_view{"No complete response within "});
-      AppendInt(message, request.settings.timeoutMs);
-      message.append(std::string_view{" ms (timeout of the request settings)."});
+      RawChars32 message;
+      AppendAll(message, "No complete response within ", request.settings.timeoutMs,
+                " ms (timeout of the request settings).");
       return response.strings.store(message);
     }
     case aeronet::HttpClientErrc::invalidUrl:

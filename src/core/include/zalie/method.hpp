@@ -1,6 +1,8 @@
 #pragma once
 
 #include <array>
+#include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -13,29 +15,14 @@ enum class Method : std::uint8_t { get, post, put, patch, del, head, options, tr
 inline constexpr std::array kMethods{Method::get,  Method::post,    Method::put,   Method::patch,  Method::del,
                                      Method::head, Method::options, Method::trace, Method::connect};
 
+// Upper-case wire names of the methods, in the order of the enumeration.
+inline constexpr std::array<std::string_view, kMethods.size()> kMethodNames{
+    "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"};
+
 // Upper-case wire name of the method ("GET", "POST", ...).
 [[nodiscard]] constexpr std::string_view MethodToStr(Method method) noexcept {
-  switch (method) {
-    case Method::get:
-      return "GET";
-    case Method::post:
-      return "POST";
-    case Method::put:
-      return "PUT";
-    case Method::patch:
-      return "PATCH";
-    case Method::del:
-      return "DELETE";
-    case Method::head:
-      return "HEAD";
-    case Method::options:
-      return "OPTIONS";
-    case Method::trace:
-      return "TRACE";
-    case Method::connect:
-      return "CONNECT";
-  }
-  return "GET";
+  assert(static_cast<std::size_t>(method) < kMethodNames.size());
+  return kMethodNames[static_cast<std::size_t>(method)];
 }
 
 // Parses a method name, case-insensitively. Returns std::nullopt for an unknown method.

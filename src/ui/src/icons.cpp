@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <string_view>
 
 #include "zalie/ui/theme.hpp"
 
@@ -15,6 +16,18 @@ namespace {
 ImVec2 At(ImVec2 center, float size, float x, float y) {
   // (x, y) in [-0.5, 0.5] relative coordinates.
   return {center.x + (x * size), center.y + (y * size)};
+}
+
+// Zalie's paw: the pad and four toes, turned by 'angle' radians. 'toeScale' enlarges the toes, for small prints.
+void DrawPawPrint(ImDrawList* pDrawList, ImVec2 center, float size, float angle, float toeScale, ImU32 color) {
+  const float cosA = std::cos(angle);
+  const float sinA = std::sin(angle);
+  const auto at = [&](float x, float y) { return At(center, size, (x * cosA) - (y * sinA), (x * sinA) + (y * cosA)); };
+  pDrawList->AddEllipseFilled(at(0, 0.17F), ImVec2(size * 0.23F, size * 0.19F), color, angle);
+  pDrawList->AddCircleFilled(at(-0.31F, -0.05F), size * 0.095F * toeScale, color);
+  pDrawList->AddCircleFilled(at(-0.12F, -0.27F), size * 0.10F * toeScale, color);
+  pDrawList->AddCircleFilled(at(0.12F, -0.27F), size * 0.10F * toeScale, color);
+  pDrawList->AddCircleFilled(at(0.31F, -0.05F), size * 0.095F * toeScale, color);
 }
 
 }  // namespace
@@ -163,20 +176,33 @@ void DrawIcon(ImDrawList* pDrawList, Icon icon, ImVec2 center, float size, ImU32
       pDrawList->AddCircleFilled(center, size * 0.11F, color);
       break;
     }
-    case Icon::paw: {
-      // Zalie's paw: the pad and four toes.
-      pDrawList->AddEllipseFilled(At(center, size, 0, 0.17F), ImVec2(size * 0.23F, size * 0.19F), color);
-      pDrawList->AddCircleFilled(At(center, size, -0.31F, -0.05F), size * 0.095F, color);
-      pDrawList->AddCircleFilled(At(center, size, -0.12F, -0.27F), size * 0.10F, color);
-      pDrawList->AddCircleFilled(At(center, size, 0.12F, -0.27F), size * 0.10F, color);
-      pDrawList->AddCircleFilled(At(center, size, 0.31F, -0.05F), size * 0.095F, color);
+    case Icon::paw:
+      DrawPawPrint(pDrawList, center, size, 0, 1.0F, color);
       break;
-    }
+    case Icon::pawPrints:
+      // Three prints in a triangle, turned like the steps of a trail.
+      DrawPawPrint(pDrawList, At(center, size, 0, -0.23F), size * 0.52F, 0.12F, 1.2F, color);
+      DrawPawPrint(pDrawList, At(center, size, -0.25F, 0.21F), size * 0.52F, -0.30F, 1.2F, color);
+      DrawPawPrint(pDrawList, At(center, size, 0.25F, 0.21F), size * 0.52F, 0.30F, 1.2F, color);
+      break;
     case Icon::columns:
       pDrawList->AddRect(At(center, size, -0.40F, -0.34F), At(center, size, 0.40F, 0.34F), color, size * 0.08F, thick);
       line(0, -0.34F, 0, 0.34F);
       break;
   }
+}
+
+void DrawItemIconLabel(Icon icon, float iconSize, std::string_view text, ImU32 color) {
+  const ImVec2 min = ImGui::GetItemRectMin();
+  const ImVec2 max = ImGui::GetItemRectMax();
+  const float gap = 6.0F * ImGui::GetStyle().FontScaleDpi;
+  const float textWidth = ImGui::CalcTextSize(text.data(), text.data() + text.size()).x;
+  const float startX = std::floor(((min.x + max.x) * 0.5F) - ((iconSize + gap + textWidth) * 0.5F));
+  const float midY = (min.y + max.y) * 0.5F;
+  ImDrawList* pDrawList = ImGui::GetWindowDrawList();
+  DrawIcon(pDrawList, icon, ImVec2(startX + (iconSize * 0.5F), midY), iconSize, color);
+  pDrawList->AddText(ImVec2(startX + iconSize + gap, std::floor(midY - (ImGui::GetFontSize() * 0.5F))), color,
+                     text.data(), text.data() + text.size());
 }
 
 bool IconButton(const char* strId, Icon icon, const char* tooltip, bool active) {

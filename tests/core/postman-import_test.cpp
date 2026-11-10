@@ -66,6 +66,50 @@ TEST(PostmanImport, Collection) {
   EXPECT_TRUE(imported->warnings[0].contains("scripts"));
 }
 
+TEST(PostmanImport, UnusualShapes) {
+  constexpr std::string_view kJson = R"({
+  "info": {"name": "Odd"},
+  "event": [{"listen": "prerequest"}],
+  "variable": [5, {"key": "on", "value": true}, {"key": "off", "value": false}],
+  "item": [
+    7,
+    {"name": "Folder", "auth": {"type": "bearer"}, "item": [
+      {"name": "Xml", "request": {"method": "POST", "url": "http://h/x",
+        "auth": {"type": "noauth"},
+        "body": {"mode": "raw", "raw": "<a/>", "options": {"raw": {"language": "xml"}}}}}
+    ]},
+    {"name": "Text", "request": {"method": "POST", "url": {"raw": "http://h/t"},
+      "auth": {"type": "digest"},
+      "body": {"mode": "raw", "raw": "plain"}}},
+    {"name": "Multipart", "request": {"method": "POST", "url": null,
+      "auth": {"type": "basic", "basic": 3},
+      "body": {"mode": "formdata", "formdata": [{"key": "a", "value": "1"}]}}},
+    {"name": "File", "request": {"method": "PUT", "url": "http://h/f", "body": {"mode": "file"}}}
+  ]
+})";
+  auto imported = ImportPostmanCollection(kJson);
+  ASSERT_TRUE(imported.has_value()) << View(imported.error());
+  const Collection& collection = imported->collection;
+  ASSERT_EQ(collection.variables.size(), 2U);
+  EXPECT_EQ(View(collection.variables[0].value), "true");
+  EXPECT_EQ(View(collection.variables[1].value), "false");
+  ASSERT_EQ(collection.root.folders.size(), 1U);
+  const Request& xml = collection.root.folders[0].requests[0];
+  EXPECT_EQ(xml.bodyMode, BodyMode::xml);
+  EXPECT_EQ(xml.auth.mode, AuthMode::none);
+  ASSERT_EQ(collection.root.requests.size(), 3U);
+  EXPECT_EQ(collection.root.requests[0].bodyMode, BodyMode::text);
+  EXPECT_EQ(View(collection.root.requests[0].url), "http://h/t");
+  const Request& multipart = collection.root.requests[1];
+  EXPECT_EQ(multipart.bodyMode, BodyMode::formUrlEncoded);
+  EXPECT_TRUE(multipart.url.empty());
+  EXPECT_EQ(multipart.auth.mode, AuthMode::basic);
+  EXPECT_TRUE(multipart.auth.username.empty());
+  EXPECT_EQ(collection.root.requests[2].bodyMode, BodyMode::none);
+  // Folder auth, digest, multipart, file body, collection scripts.
+  EXPECT_EQ(imported->warnings.size(), 5U);
+}
+
 TEST(PostmanImport, Errors) {
   EXPECT_FALSE(ImportPostmanCollection("not json").has_value());
   EXPECT_FALSE(ImportPostmanCollection(R"({"a": 1})").has_value());

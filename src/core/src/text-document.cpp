@@ -1,9 +1,10 @@
 #include "zalie/text-document.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <string_view>
 
 #include "zalie/string-utils.hpp"
@@ -16,7 +17,7 @@ namespace {
 bool IsBinary(std::string_view body) noexcept {
   static constexpr std::size_t kSniffSize = 8192;
   const std::string_view head = body.substr(0, kSniffSize);
-  return std::memchr(head.data(), '\0', head.size()) != nullptr;
+  return head.contains('\0');
 }
 
 bool IsImageMagic(std::string_view body) noexcept {
@@ -39,16 +40,16 @@ ContentKind DetectContentKind(std::string_view contentType, std::string_view bod
     return ContentKind::empty;
   }
   contentType = contentType.substr(0, contentType.find(';'));
-  if (FindIgnoreCase(contentType, "json") != std::string_view::npos) {
+  if (ContainsIgnoreCase(contentType, "json")) {
     return ContentKind::json;
   }
-  if (FindIgnoreCase(contentType, "html") != std::string_view::npos) {
+  if (ContainsIgnoreCase(contentType, "html")) {
     return ContentKind::html;
   }
-  if (FindIgnoreCase(contentType, "xml") != std::string_view::npos) {
+  if (ContainsIgnoreCase(contentType, "xml")) {
     return ContentKind::xml;
   }
-  if (FindIgnoreCase(contentType, "javascript") != std::string_view::npos) {
+  if (ContainsIgnoreCase(contentType, "javascript")) {
     return ContentKind::javascript;
   }
   if (StartsWithIgnoreCase(contentType, "image/")) {
@@ -71,41 +72,35 @@ ContentKind DetectContentKind(std::string_view contentType, std::string_view bod
   return ContentKind::text;
 }
 
-SyntaxLanguage SyntaxFor(ContentKind kind) noexcept {
-  switch (kind) {
-    case ContentKind::json:
-      return SyntaxLanguage::json;
-    case ContentKind::xml:
-    case ContentKind::html:
-      return SyntaxLanguage::xml;
-    case ContentKind::javascript:
-      return SyntaxLanguage::code;
-    default:
-      return SyntaxLanguage::plain;
-  }
+namespace {
+
+// What Zalie knows of a kind of content, in the order of ContentKind.
+struct ContentKindInfo {
+  std::string_view name;
+  SyntaxLanguage syntax;
+};
+
+constexpr std::array<ContentKindInfo, 8> kContentKinds{{
+    {.name = "Empty", .syntax = SyntaxLanguage::plain},
+    {.name = "JSON", .syntax = SyntaxLanguage::json},
+    {.name = "XML", .syntax = SyntaxLanguage::xml},
+    {.name = "HTML", .syntax = SyntaxLanguage::xml},
+    {.name = "JavaScript", .syntax = SyntaxLanguage::code},
+    {.name = "Text", .syntax = SyntaxLanguage::plain},
+    {.name = "Image", .syntax = SyntaxLanguage::plain},
+    {.name = "Binary", .syntax = SyntaxLanguage::plain},
+}};
+
+const ContentKindInfo& InfoOf(ContentKind kind) noexcept {
+  assert(static_cast<std::size_t>(kind) < kContentKinds.size());
+  return kContentKinds[static_cast<std::size_t>(kind)];
 }
 
-std::string_view ContentKindName(ContentKind kind) noexcept {
-  switch (kind) {
-    case ContentKind::empty:
-      return "Empty";
-    case ContentKind::json:
-      return "JSON";
-    case ContentKind::xml:
-      return "XML";
-    case ContentKind::html:
-      return "HTML";
-    case ContentKind::javascript:
-      return "JavaScript";
-    case ContentKind::text:
-      return "Text";
-    case ContentKind::image:
-      return "Image";
-    case ContentKind::binary:
-      return "Binary";
-  }
-  return "Text";
-}
+}  // namespace
+
+SyntaxLanguage SyntaxFor(ContentKind kind) noexcept { return InfoOf(kind).syntax; }
+
+std::string_view ContentKindName(ContentKind kind) noexcept { return InfoOf(kind).name; }
 
 void LineIndex::clear() noexcept {
   _lines.clear();

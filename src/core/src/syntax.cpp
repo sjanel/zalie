@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -10,10 +11,101 @@ namespace zalie {
 
 namespace {
 
-constexpr bool IsDigit(char ch) noexcept { return ch >= '0' && ch <= '9'; }
-constexpr bool IsAlpha(char ch) noexcept { return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'; }
-constexpr bool IsAlnum(char ch) noexcept { return IsAlpha(ch) || IsDigit(ch); }
-constexpr bool IsBlank(char ch) noexcept { return ch == ' ' || ch == '\t' || ch == '\r'; }
+constexpr std::size_t kNpos = std::string_view::npos;
+
+// Classes of the bytes of a line, as bits of a single table: a rule made of several classes is tested with the union
+// of their bits, in a single lookup.
+constexpr unsigned kBlank = 1U << 0U;            // ' ' / '\t' / '\r'
+constexpr unsigned kWordStart = 1U << 1U;        // ALPHA / '_'
+constexpr unsigned kDigit = 1U << 2U;            // DIGIT
+constexpr unsigned kNumberSymbol = 1U << 3U;     // '.' / '-' / '+', inside a number (1.5e-3)
+constexpr unsigned kQuote = 1U << 4U;            // '"' / '\''
+constexpr unsigned kTagEnd = 1U << 5U;           // '>' / '/': end of an XML tag or attribute name
+constexpr unsigned kTagMark = 1U << 6U;          // '/' / '!' / '?' just after the '<' of an XML tag
+constexpr unsigned kEqual = 1U << 7U;            // '='
+constexpr unsigned kCodePunctuation = 1U << 8U;  // the punctuation colored in code: { } [ ] ( ) ; , . : = < >
+constexpr unsigned kWord = kWordStart | kDigit;
+constexpr unsigned kNumber = kWord | kNumberSymbol;
+
+// Returns true if 'ch' is in one of the classes of 'classMask'.
+constexpr bool IsOfClass(char ch, unsigned classMask) noexcept {
+  static constexpr auto kCharClasses = [] {
+    std::array<std::uint16_t, 256> table{};
+    const auto add = [&table](std::string_view chars, unsigned charClass) {
+      for (const char byte : chars) {
+        std::uint16_t& bits = table[static_cast<unsigned char>(byte)];
+        bits = static_cast<std::uint16_t>(bits | charClass);
+      }
+    };
+    add(" \t\r", kBlank);
+    add("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_", kWordStart);
+    add("0123456789", kDigit);
+    add(".-+", kNumberSymbol);
+    add("\"'", kQuote);
+    add(">/", kTagEnd);
+    add("/!?", kTagMark);
+    add("=", kEqual);
+    add("{}[]();,.:=<>", kCodePunctuation);
+    return table;
+  }();
+  return (kCharClasses[static_cast<unsigned char>(ch)] & classMask) != 0;
+}
+
+// Position of the first byte from 'pos' that is not in 'classMask', or the line size.
+constexpr std::size_t SkipClass(std::string_view line, std::size_t pos, unsigned classMask) noexcept {
+  while (pos < line.size() && IsOfClass(line[pos], classMask)) {
+    ++pos;
+  }
+  return pos;
+}
+
+// Position of the first byte from 'pos' that is in 'classMask', or the line size.
+constexpr std::size_t FindClass(std::string_view line, std::size_t pos, unsigned classMask) noexcept {
+  while (pos < line.size() && !IsOfClass(line[pos], classMask)) {
+    ++pos;
+  }
+  return pos;
+}
+
+// End of a construct spanning lines (string, comment), scanned on one line.
+struct Scan {
+  std::size_t end;  // after the closing delimiter, or the line size
+  bool closed;      // false: the construct goes on on the next line
+};
+
+// Scans up to and including 'terminator' from 'pos'.
+Scan ScanTo(std::string_view line, std::size_t pos, std::string_view terminator) noexcept {
+  const std::size_t found = line.find(terminator, pos);
+  return found == kNpos ? Scan{line.size(), false} : Scan{found + terminator.size(), true};
+}
+
+// Scans the rest of a string from 'pos' (just after its opening quote, or the start of a line continuing it) up to
+// and including the closing 'quote'. A backslash escapes the next byte if 'escapes'.
+Scan ScanQuoted(std::string_view line, std::size_t pos, char quote, bool escapes) noexcept {
+  if (!escapes) {
+    return ScanTo(line, pos, std::string_view(&quote, 1));
+  }
+  for (; pos < line.size(); ++pos) {
+    if (line[pos] == quote) {
+      return {pos + 1, true};
+    }
+    if (line[pos] == '\\') {
+      ++pos;
+    }
+  }
+  return {line.size(), false};
+}
+
+// Scans the rest of a C++ raw string literal from 'pos': it ends at ')' + delimiter + '"'.
+Scan ScanRawString(std::string_view line, std::size_t pos) noexcept {
+  for (pos = line.find(')', pos); pos != kNpos; pos = line.find(')', pos + 1)) {
+    const std::size_t delimiterEnd = SkipClass(line, pos + 1, kWord);
+    if (delimiterEnd < line.size() && line[delimiterEnd] == '"') {
+      return {delimiterEnd + 1, true};
+    }
+  }
+  return {line.size(), false};
+}
 
 void Push(LineTokens& out, std::size_t begin, std::size_t end, TokenKind kind) {
   if (end > begin) {
@@ -21,144 +113,91 @@ void Push(LineTokens& out, std::size_t begin, std::size_t end, TokenKind kind) {
   }
 }
 
-// End of a string starting at 'pos' (on the opening quote): position after the closing quote, or the line size if
-// the string does not end on this line. Backslash escapes are honored if 'escapes'.
-std::size_t StringEnd(std::string_view line, std::size_t pos, char quote, bool escapes, bool& closed) noexcept {
-  for (++pos; pos < line.size(); ++pos) {
-    if (escapes && line[pos] == '\\') {
-      ++pos;
-    } else if (line[pos] == quote) {
-      closed = true;
-      return pos + 1;
-    }
-  }
-  closed = false;
-  return line.size();
-}
-
-std::size_t NumberEnd(std::string_view line, std::size_t pos) noexcept {
-  while (pos < line.size() && (IsAlnum(line[pos]) || line[pos] == '.' || line[pos] == '-' || line[pos] == '+')) {
-    ++pos;
-  }
-  return pos;
-}
-
-void TokenizeJson(std::string_view line, LineTokens& out) {
+void TokenizeJson(std::string_view line, SyntaxState& /*state*/, LineTokens& out) {
   std::size_t pos = 0;
   while (pos < line.size()) {
     const char ch = line[pos];
-    if (IsBlank(ch)) {
-      ++pos;
-    } else if (ch == '"') {
-      bool closed = false;
-      const std::size_t end = StringEnd(line, pos, '"', true, closed);
-      std::size_t next = end;
-      while (next < line.size() && IsBlank(line[next])) {
-        ++next;
-      }
-      Push(out, pos, end, next < line.size() && line[next] == ':' ? TokenKind::key : TokenKind::string);
+    std::size_t end = pos + 1;
+    TokenKind kind = TokenKind::punctuation;
+    if (IsOfClass(ch, kBlank)) {
       pos = end;
-    } else if (IsDigit(ch) || ch == '-') {
-      const std::size_t end = NumberEnd(line, pos + 1);
-      Push(out, pos, end, TokenKind::number);
-      pos = end;
-    } else if (IsAlpha(ch)) {
-      std::size_t end = pos + 1;
-      while (end < line.size() && IsAlnum(line[end])) {
-        ++end;
-      }
-      Push(out, pos, end, TokenKind::keyword);
-      pos = end;
-    } else {
-      Push(out, pos, pos + 1, TokenKind::punctuation);
-      ++pos;
+      continue;
     }
+    if (ch == '"') {
+      end = ScanQuoted(line, end, '"', true).end;
+      const std::size_t next = SkipClass(line, end, kBlank);
+      kind = next < line.size() && line[next] == ':' ? TokenKind::key : TokenKind::string;
+    } else if (ch == '-' || IsOfClass(ch, kDigit)) {
+      end = SkipClass(line, end, kNumber);
+      kind = TokenKind::number;
+    } else if (IsOfClass(ch, kWordStart)) {
+      end = SkipClass(line, end, kWord);
+      kind = TokenKind::keyword;
+    }
+    Push(out, pos, end, kind);
+    pos = end;
   }
 }
 
 // XML / HTML states.
 enum : SyntaxState { kXmlText = 0, kXmlTag = 1, kXmlComment = 2, kXmlDoubleQuoted = 3, kXmlSingleQuoted = 4 };
 
+// Tokenizes one item of a tag from 'pos' (attribute, '=', value or end of the tag), returns the position after it.
+std::size_t TokenizeXmlTagItem(std::string_view line, std::size_t pos, SyntaxState& state, LineTokens& out) {
+  const char ch = line[pos];
+  std::size_t end = pos + 1;
+  TokenKind kind = TokenKind::punctuation;  // '='
+  if (IsOfClass(ch, kBlank)) {
+    return end;
+  }
+  if (ch == '>' || ((ch == '/' || ch == '?') && end < line.size() && line[end] == '>')) {
+    end += ch == '>' ? 0 : 1;
+    kind = TokenKind::tag;
+    state = kXmlText;
+  } else if (IsOfClass(ch, kQuote)) {
+    // Attribute value, possibly continued on the next lines.
+    const Scan scan = ScanQuoted(line, end, ch, false);
+    end = scan.end;
+    kind = TokenKind::string;
+    if (!scan.closed) {
+      state = ch == '"' ? kXmlDoubleQuoted : kXmlSingleQuoted;
+    }
+  } else if (ch != '=') {
+    end = FindClass(line, end, kBlank | kEqual | kTagEnd | kQuote);
+    kind = TokenKind::attribute;
+  }
+  Push(out, pos, end, kind);
+  return end;
+}
+
 void TokenizeXml(std::string_view line, SyntaxState& state, LineTokens& out) {
   std::size_t pos = 0;
   while (pos < line.size()) {
-    switch (state) {
-      case kXmlComment: {
-        const std::size_t endPos = line.find("-->", pos);
-        const std::size_t end = endPos == std::string_view::npos ? line.size() : endPos + 3;
-        Push(out, pos, end, TokenKind::comment);
-        pos = end;
-        if (endPos != std::string_view::npos) {
-          state = kXmlText;
-        }
-        break;
+    if (state == kXmlTag) {
+      pos = TokenizeXmlTagItem(line, pos, state, out);
+    } else if (state != kXmlText) {
+      // Continuation of a comment or of an attribute value.
+      const bool comment = state == kXmlComment;
+      const Scan scan =
+          comment ? ScanTo(line, pos, "-->") : ScanQuoted(line, pos, state == kXmlDoubleQuoted ? '"' : '\'', false);
+      Push(out, pos, scan.end, comment ? TokenKind::comment : TokenKind::string);
+      pos = scan.end;
+      if (scan.closed) {
+        state = comment ? kXmlText : kXmlTag;
       }
-      case kXmlDoubleQuoted:
-      case kXmlSingleQuoted: {
-        const char quote = state == kXmlDoubleQuoted ? '"' : '\'';
-        const std::size_t quotePos = line.find(quote, pos);
-        const std::size_t end = quotePos == std::string_view::npos ? line.size() : quotePos + 1;
-        Push(out, pos, end, TokenKind::string);
-        pos = end;
-        if (quotePos != std::string_view::npos) {
-          state = kXmlTag;
-        }
-        break;
+    } else {
+      pos = line.find('<', pos);
+      if (pos == kNpos) {
+        return;
       }
-      case kXmlTag: {
-        const char ch = line[pos];
-        if (IsBlank(ch)) {
-          ++pos;
-        } else if (ch == '>' || ((ch == '/' || ch == '?') && pos + 1 < line.size() && line[pos + 1] == '>')) {
-          const std::size_t end = ch == '>' ? pos + 1 : pos + 2;
-          Push(out, pos, end, TokenKind::tag);
-          pos = end;
-          state = kXmlText;
-        } else if (ch == '"' || ch == '\'') {
-          // Attribute value, possibly continued on the next lines.
-          const std::size_t quotePos = line.find(ch, pos + 1);
-          const std::size_t end = quotePos == std::string_view::npos ? line.size() : quotePos + 1;
-          Push(out, pos, end, TokenKind::string);
-          pos = end;
-          if (quotePos == std::string_view::npos) {
-            state = ch == '"' ? kXmlDoubleQuoted : kXmlSingleQuoted;
-          }
-        } else if (ch == '=') {
-          Push(out, pos, pos + 1, TokenKind::punctuation);
-          ++pos;
-        } else {
-          std::size_t end = pos + 1;
-          while (end < line.size() && !IsBlank(line[end]) && line[end] != '=' && line[end] != '>' && line[end] != '/' &&
-                 line[end] != '"' && line[end] != '\'') {
-            ++end;
-          }
-          Push(out, pos, end, TokenKind::attribute);
-          pos = end;
-        }
-        break;
+      if (line.substr(pos).starts_with("<!--")) {
+        state = kXmlComment;
+        continue;
       }
-      default: {  // text
-        const std::size_t ltPos = line.find('<', pos);
-        if (ltPos == std::string_view::npos) {
-          return;
-        }
-        pos = ltPos;
-        if (line.substr(pos).starts_with("<!--")) {
-          state = kXmlComment;
-          continue;
-        }
-        std::size_t end = pos + 1;
-        while (end < line.size() && (line[end] == '/' || line[end] == '!' || line[end] == '?')) {
-          ++end;
-        }
-        while (end < line.size() && !IsBlank(line[end]) && line[end] != '>' && line[end] != '/') {
-          ++end;
-        }
-        Push(out, pos, end, TokenKind::tag);
-        pos = end;
-        state = kXmlTag;
-        break;
-      }
+      const std::size_t end = FindClass(line, SkipClass(line, pos + 1, kTagMark), kBlank | kTagEnd);
+      Push(out, pos, end, TokenKind::tag);
+      pos = end;
+      state = kXmlTag;
     }
   }
 }
@@ -171,45 +210,30 @@ void TokenizeShell(std::string_view line, SyntaxState& state, LineTokens& out) {
   bool wordStart = true;
   bool firstWord = state == kShellNormal;
   while (pos < line.size()) {
-    if (state == kShellSingle || state == kShellDouble) {
+    if (state != kShellNormal) {
       // Continuation of a quoted argument opened on a previous line.
-      const char quote = state == kShellSingle ? '\'' : '"';
-      const std::size_t begin = pos;
-      bool closed = false;
-      for (; pos < line.size(); ++pos) {
-        if (quote == '"' && line[pos] == '\\') {
-          ++pos;
-        } else if (line[pos] == quote) {
-          closed = true;
-          ++pos;
-          break;
-        }
-      }
-      pos = std::min(pos, line.size());
-      Push(out, begin, pos, TokenKind::string);
-      if (closed) {
+      const Scan scan = ScanQuoted(line, pos, state == kShellSingle ? '\'' : '"', state == kShellDouble);
+      Push(out, pos, scan.end, TokenKind::string);
+      pos = scan.end;
+      if (scan.closed) {
         state = kShellNormal;
       }
       wordStart = false;
       continue;
     }
     const char ch = line[pos];
-    if (IsBlank(ch)) {
+    if (IsOfClass(ch, kBlank)) {
       ++pos;
       wordStart = true;
       continue;
     }
-    if (ch == '\'' || ch == '"' || (ch == '$' && pos + 1 < line.size() && line[pos + 1] == '\'')) {
-      const std::size_t begin = pos;
-      if (ch == '$') {
-        ++pos;
-      }
-      const char quote = line[pos];
-      bool closed = false;
-      const std::size_t end = StringEnd(line, pos, quote, quote == '"' || ch == '$', closed);
-      Push(out, begin, end, TokenKind::string);
-      pos = end;
-      if (!closed) {
+    const bool ansiC = ch == '$' && pos + 1 < line.size() && line[pos + 1] == '\'';  // $'...' escapes like C
+    if (ansiC || IsOfClass(ch, kQuote)) {
+      const char quote = ansiC ? '\'' : ch;
+      const Scan scan = ScanQuoted(line, pos + (ansiC ? 2 : 1), quote, ansiC || quote == '"');
+      Push(out, pos, scan.end, TokenKind::string);
+      pos = scan.end;
+      if (!scan.closed) {
         state = quote == '\'' ? kShellSingle : kShellDouble;
       }
       wordStart = false;
@@ -224,14 +248,9 @@ void TokenizeShell(std::string_view line, SyntaxState& state, LineTokens& out) {
       Push(out, pos, pos + 1, TokenKind::punctuation);
       return;
     }
-    std::size_t end = pos;
-    while (end < line.size() && !IsBlank(line[end]) && line[end] != '\'' && line[end] != '"') {
-      ++end;
-    }
-    if (wordStart && ch == '-') {
-      Push(out, pos, end, TokenKind::attribute);
-    } else if (wordStart && firstWord) {
-      Push(out, pos, end, TokenKind::keyword);
+    const std::size_t end = FindClass(line, pos + 1, kBlank | kQuote);
+    if (wordStart && (ch == '-' || firstWord)) {
+      Push(out, pos, end, ch == '-' ? TokenKind::attribute : TokenKind::keyword);
     }
     firstWord = false;
     wordStart = false;
@@ -256,86 +275,52 @@ enum : SyntaxState { kCodeNormal = 0, kCodeRawString = 1, kCodeBackquote = 2 };
 void TokenizeCode(std::string_view line, SyntaxState& state, LineTokens& out) {
   std::size_t pos = 0;
   while (pos < line.size()) {
-    if (state == kCodeRawString) {
-      // Ends at ')' + delimiter + '"'.
-      std::size_t end = line.size();
-      for (std::size_t scan = pos; scan < line.size(); ++scan) {
-        if (line[scan] != ')') {
-          continue;
-        }
-        std::size_t delimEnd = scan + 1;
-        while (delimEnd < line.size() && IsAlnum(line[delimEnd])) {
-          ++delimEnd;
-        }
-        if (delimEnd < line.size() && line[delimEnd] == '"') {
-          end = delimEnd + 1;
-          state = kCodeNormal;
-          break;
-        }
-      }
-      Push(out, pos, end, TokenKind::string);
-      pos = end;
-      continue;
-    }
-    if (state == kCodeBackquote) {
-      const std::size_t quotePos = line.find('`', pos);
-      const std::size_t end = quotePos == std::string_view::npos ? line.size() : quotePos + 1;
-      Push(out, pos, end, TokenKind::string);
-      pos = end;
-      if (quotePos != std::string_view::npos) {
+    if (state != kCodeNormal) {
+      const Scan scan = state == kCodeRawString ? ScanRawString(line, pos) : ScanTo(line, pos, "`");
+      Push(out, pos, scan.end, TokenKind::string);
+      pos = scan.end;
+      if (scan.closed) {
         state = kCodeNormal;
       }
       continue;
     }
     const char ch = line[pos];
-    if (IsBlank(ch)) {
-      ++pos;
-    } else if (ch == 'R' && pos + 1 < line.size() && line[pos + 1] == '"') {
+    std::size_t end = pos + 1;
+    TokenKind kind = TokenKind::plain;  // not pushed
+    if (ch == 'R' && end < line.size() && line[end] == '"') {
       state = kCodeRawString;
-      Push(out, pos, pos + 2, TokenKind::string);
-      pos += 2;
+      end = pos + 2;
+      kind = TokenKind::string;
     } else if (ch == '`') {
       state = kCodeBackquote;
-      Push(out, pos, pos + 1, TokenKind::string);
-      ++pos;
-    } else if (ch == '"' || ch == '\'') {
-      bool closed = false;
-      const std::size_t end = StringEnd(line, pos, ch, true, closed);
-      Push(out, pos, end, TokenKind::string);
-      pos = end;
-    } else if ((ch == '/' && pos + 1 < line.size() && line[pos + 1] == '/') ||
+      kind = TokenKind::string;
+    } else if (IsOfClass(ch, kQuote)) {
+      end = ScanQuoted(line, end, ch, true).end;
+      kind = TokenKind::string;
+    } else if ((ch == '/' && end < line.size() && line[end] == '/') ||
                (ch == '#' && !line.substr(pos).starts_with("#include"))) {
       Push(out, pos, line.size(), TokenKind::comment);
       return;
     } else if (ch == '#' || ch == '$') {
-      std::size_t end = pos + 1;
-      while (end < line.size() && IsAlnum(line[end])) {
-        ++end;
-      }
-      Push(out, pos, end, ch == '#' ? TokenKind::keyword : TokenKind::attribute);
-      pos = end;
-    } else if (IsDigit(ch)) {
-      const std::size_t end = NumberEnd(line, pos + 1);
-      Push(out, pos, end, TokenKind::number);
-      pos = end;
-    } else if (IsAlpha(ch)) {
-      std::size_t end = pos + 1;
-      while (end < line.size() && IsAlnum(line[end])) {
-        ++end;
-      }
-      const std::string_view word = line.substr(pos, end - pos);
-      if (std::ranges::contains(kCodeKeywords, word)) {
-        Push(out, pos, end, TokenKind::keyword);
+      end = SkipClass(line, end, kWord);
+      kind = ch == '#' ? TokenKind::keyword : TokenKind::attribute;
+    } else if (IsOfClass(ch, kDigit)) {
+      end = SkipClass(line, end, kNumber);
+      kind = TokenKind::number;
+    } else if (IsOfClass(ch, kWordStart)) {
+      end = SkipClass(line, end, kWord);
+      if (std::ranges::contains(kCodeKeywords, line.substr(pos, end - pos))) {
+        kind = TokenKind::keyword;
       } else if (end < line.size() && line[end] == '(') {
-        Push(out, pos, end, TokenKind::tag);  // function call
+        kind = TokenKind::tag;  // function call
       }
-      pos = end;
-    } else {
-      if (std::string_view{"{}[]();,.:=<>"}.contains(ch)) {
-        Push(out, pos, pos + 1, TokenKind::punctuation);
-      }
-      ++pos;
+    } else if (IsOfClass(ch, kCodePunctuation)) {
+      kind = TokenKind::punctuation;
     }
+    if (kind != TokenKind::plain) {
+      Push(out, pos, end, kind);
+    }
+    pos = end;
   }
 }
 
@@ -346,75 +331,49 @@ void TokenizeHttp(std::string_view line, SyntaxState& state, LineTokens& out) {
   if (line.ends_with('\r')) {
     line.remove_suffix(1);
   }
-  switch (state) {
-    case kHttpStart: {
-      const std::size_t spacePos = line.find(' ');
-      Push(out, 0, spacePos == std::string_view::npos ? line.size() : spacePos, TokenKind::keyword);
-      const std::size_t versionPos = line.rfind(" HTTP/");
-      if (versionPos != std::string_view::npos && versionPos != spacePos) {
-        Push(out, versionPos + 1, line.size(), TokenKind::comment);
-      }
-      state = kHttpHeaders;
-      break;
+  if (state == kHttpStart) {
+    // First word (method of a request, version of a response) and version of a request.
+    const std::size_t spacePos = line.find(' ');
+    Push(out, 0, std::min(spacePos, line.size()), TokenKind::keyword);
+    const std::size_t versionPos = line.rfind(" HTTP/");
+    if (versionPos != kNpos && versionPos != spacePos) {
+      Push(out, versionPos + 1, line.size(), TokenKind::comment);
     }
-    case kHttpHeaders: {
-      if (line.empty()) {
-        state = kHttpBody;
-        break;
-      }
-      const std::size_t colonPos = line.find(':');
-      if (colonPos != std::string_view::npos) {
-        Push(out, 0, colonPos, TokenKind::key);
-        Push(out, colonPos, colonPos + 1, TokenKind::punctuation);
-        Push(out, colonPos + 1, line.size(), TokenKind::string);
-      }
-      break;
+    state = kHttpHeaders;
+  } else if (state == kHttpHeaders) {
+    const std::size_t colonPos = line.find(':');
+    if (line.empty()) {
+      state = kHttpBody;  // the body is not colored
+    } else if (colonPos != kNpos) {
+      Push(out, 0, colonPos, TokenKind::key);
+      Push(out, colonPos, colonPos + 1, TokenKind::punctuation);
+      Push(out, colonPos + 1, line.size(), TokenKind::string);
     }
-    default:
-      break;
   }
 }
 
-void TokenizeVariables(std::string_view line, LineTokens& out) {
-  std::size_t pos = 0;
-  while (true) {
-    const std::size_t openPos = line.find("{{", pos);
-    if (openPos == std::string_view::npos) {
+void TokenizeVariables(std::string_view line, SyntaxState& /*state*/, LineTokens& out) {
+  for (std::size_t pos = line.find("{{"); pos != kNpos; pos = line.find("{{", pos)) {
+    const std::size_t closePos = line.find("}}", pos + 2);
+    if (closePos == kNpos) {
       return;
     }
-    const std::size_t closePos = line.find("}}", openPos + 2);
-    if (closePos == std::string_view::npos) {
-      return;
-    }
-    Push(out, openPos, closePos + 2, TokenKind::variable);
+    Push(out, pos, closePos + 2, TokenKind::variable);
     pos = closePos + 2;
   }
 }
 
+// Tokenizers, in the order of SyntaxLanguage.
+constexpr std::array kTokenizers{TokenizeVariables, TokenizeJson, TokenizeXml,
+                                 TokenizeShell,     TokenizeCode, TokenizeHttp};
+static_assert(kTokenizers.size() == static_cast<std::size_t>(SyntaxLanguage::http) + 1);
+
 }  // namespace
 
 void TokenizeLine(SyntaxLanguage language, std::string_view line, SyntaxState& state, LineTokens& out) {
+  assert(static_cast<std::size_t>(language) < kTokenizers.size());
   out.clear();
-  switch (language) {
-    case SyntaxLanguage::json:
-      TokenizeJson(line, out);
-      break;
-    case SyntaxLanguage::xml:
-      TokenizeXml(line, state, out);
-      break;
-    case SyntaxLanguage::shell:
-      TokenizeShell(line, state, out);
-      break;
-    case SyntaxLanguage::code:
-      TokenizeCode(line, state, out);
-      break;
-    case SyntaxLanguage::http:
-      TokenizeHttp(line, state, out);
-      break;
-    case SyntaxLanguage::plain:
-      TokenizeVariables(line, out);
-      break;
-  }
+  kTokenizers[static_cast<std::size_t>(language)](line, state, out);
 }
 
 }  // namespace zalie

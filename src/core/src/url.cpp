@@ -1,5 +1,12 @@
 #include "zalie/url.hpp"
 
+#include <aeronet/cctype.hpp>
+#include <aeronet/memory-utils-sv.hpp>
+#include <aeronet/string-equal-ignore-case.hpp>
+#include <aeronet/toupperlower.hpp>
+#include <aeronet/url-char-class.hpp>
+#include <aeronet/url-decode.hpp>
+#include <aeronet/url-encode.hpp>
 #include <algorithm>
 #include <cstddef>
 #include <string_view>
@@ -8,36 +15,8 @@
 #include "zalie/key-value.hpp"
 #include "zalie/raw-chars.hpp"
 #include "zalie/request.hpp"
-#include "zalie/string-utils.hpp"
 
 namespace zalie {
-
-namespace {
-
-constexpr bool IsUnreserved(char ch) noexcept {
-  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' ||
-         ch == '_' || ch == '~';
-}
-
-constexpr int HexValue(char ch) noexcept {
-  if (ch >= '0' && ch <= '9') {
-    return ch - '0';
-  }
-  if (ch >= 'a' && ch <= 'f') {
-    return ch - 'a' + 10;
-  }
-  if (ch >= 'A' && ch <= 'F') {
-    return ch - 'A' + 10;
-  }
-  return -1;
-}
-
-constexpr bool IsSchemeChar(char ch) noexcept {
-  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '+' || ch == '-' ||
-         ch == '.';
-}
-
-}  // namespace
 
 UrlQuerySplit SplitUrlQuery(std::string_view url) noexcept {
   UrlQuerySplit split;
@@ -82,24 +61,25 @@ RawChars32 ComposeUrl(std::string_view url, const KeyValues& params) {
     size += param.key.size() + param.value.size() + 2;  // separator + '='
   }
   RawChars32 ret(size);
-  ret.unchecked_append(split.base);
+  char* pData = aeronet::Append(split.base, ret.data());
   char sep = '?';
   for (const KeyValue& param : params) {
     if (!param.enabled) {
       continue;
     }
-    ret.unchecked_push_back(sep);
+    *pData++ = sep;
     sep = '&';
-    ret.unchecked_append(param.key);
+    pData = aeronet::Append(param.key, pData);
     if (!param.value.empty()) {
-      ret.unchecked_push_back('=');
-      ret.unchecked_append(param.value);
+      *pData++ = '=';
+      pData = aeronet::Append(param.value, pData);
     }
   }
   if (keepFragment) {
-    ret.unchecked_push_back('#');
-    ret.unchecked_append(split.fragment);
+    *pData++ = '#';
+    pData = aeronet::Append(split.fragment, pData);
   }
+  ret.setEnd(pData);
   return ret;
 }
 
@@ -117,38 +97,23 @@ void SyncParamsFromUrl(Request& req) {
 void SyncUrlFromParams(Request& req) { req.url = ComposeUrl(req.url, req.params); }
 
 void AppendUrlEncoded(std::string_view in, RawChars32& out, bool spaceAsPlus) {
-  static constexpr char kHex[] = "0123456789ABCDEF";
-  const auto nbEncoded = static_cast<std::size_t>(std::ranges::count_if(in, [](char ch) { return !IsUnreserved(ch); }));
-  out.ensureAvailableCapacity(in.size() + (2 * nbEncoded));
-  for (char ch : in) {
-    if (IsUnreserved(ch)) {
-      out.unchecked_push_back(ch);
-    } else if (ch == ' ' && spaceAsPlus) {
-      out.unchecked_push_back('+');
-    } else {
-      const auto byte = static_cast<unsigned char>(ch);
-      out.unchecked_push_back('%');
-      out.unchecked_push_back(kHex[byte >> 4U]);
-      out.unchecked_push_back(kHex[byte & 0xFU]);
-    }
+  if (!spaceAsPlus) {
+    out.ensureAvailableCapacityExponential(aeronet::URLEncodedSize(in, aeronet::url::IsUnreserved));
+    out.setEnd(aeronet::URLEncode(in, aeronet::url::IsUnreserved, out.end()));
+    return;
   }
+  // The spaces are written as they are, then replaced: no other space can be in the encoded text.
+  static constexpr auto kIsKept = [](char ch) noexcept { return aeronet::url::IsUnreserved(ch) || ch == ' '; };
+  out.ensureAvailableCapacityExponential(aeronet::URLEncodedSize(in, kIsKept));
+  char* pBegin = out.end();
+  char* pEnd = aeronet::URLEncode(in, kIsKept, pBegin);
+  std::replace(pBegin, pEnd, ' ', '+');
+  out.setEnd(pEnd);
 }
 
 RawChars32 UrlDecode(std::string_view in, bool plusAsSpace) {
-  RawChars32 ret(in.size());
-  for (std::size_t i = 0; i < in.size(); ++i) {
-    const char ch = in[i];
-    if (ch == '%' && i + 2 < in.size()) {
-      const int high = HexValue(in[i + 1]);
-      const int low = HexValue(in[i + 2]);
-      if (high >= 0 && low >= 0) {
-        ret.unchecked_push_back(static_cast<char>((high << 4) | low));
-        i += 2;
-        continue;
-      }
-    }
-    ret.unchecked_push_back(ch == '+' && plusAsSpace ? ' ' : ch);
-  }
+  RawChars32 ret(in);  // decoding only shrinks
+  ret.setEnd(aeronet::url::DecodeInPlace(ret.data(), ret.end(), plusAsSpace ? ' ' : '+', false));
   return ret;
 }
 
@@ -158,8 +123,7 @@ bool HasScheme(std::string_view url) noexcept {
     return false;
   }
   const std::string_view scheme = url.substr(0, sepPos);
-  const bool startsWithLetter = (scheme[0] >= 'a' && scheme[0] <= 'z') || (scheme[0] >= 'A' && scheme[0] <= 'Z');
-  return startsWithLetter && std::ranges::all_of(scheme, IsSchemeChar);
+  return aeronet::islower(aeronet::tolower(scheme.front())) && std::ranges::all_of(scheme, aeronet::url::IsSchemeChar);
 }
 
 UrlTarget SplitUrlTarget(std::string_view url) noexcept {
@@ -190,16 +154,16 @@ std::string_view UrlHost(std::string_view url) noexcept {
 bool IsLocalHost(std::string_view host) noexcept {
   static constexpr std::string_view kLocalhost = "localhost";
   static constexpr std::string_view kLoopbackPrefix = "127.";
-  if (EqualsIgnoreCase(host, kLocalhost) ||
+  if (aeronet::CaseInsensitiveEqual(host, kLocalhost) ||
       (host.size() > kLocalhost.size() + 1 && host[host.size() - kLocalhost.size() - 1] == '.' &&
-       EqualsIgnoreCase(host.substr(host.size() - kLocalhost.size()), kLocalhost))) {
+       aeronet::CaseInsensitiveEqual(host.substr(host.size() - kLocalhost.size()), kLocalhost))) {
     return true;
   }
   if (host == "::1") {
     return true;
   }
   return host.starts_with(kLoopbackPrefix) && std::ranges::count(host, '.') == 3 && host.back() != '.' &&
-         std::ranges::all_of(host, [](char ch) { return ch == '.' || (ch >= '0' && ch <= '9'); });
+         std::ranges::all_of(host, [](char ch) { return ch == '.' || aeronet::isdigit(ch); });
 }
 
 }  // namespace zalie

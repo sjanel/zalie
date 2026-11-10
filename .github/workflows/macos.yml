@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   macos:
-    name: macOS ${{ matrix.build }}
+    name: macOS (${{ matrix.build }})
     strategy:
       fail-fast: false
       matrix:

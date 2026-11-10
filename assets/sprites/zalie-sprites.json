@@ -4,10 +4,22 @@
   "animations": {
     "run": {
       "row": 0,
+      "column": 0,
       "frames": 8
     },
     "sleep": {
       "row": 1,
+      "column": 0,
+      "frames": 4
+    },
+    "eat": {
+      "row": 2,
+      "column": 0,
+      "frames": 4
+    },
+    "meat": {
+      "row": 2,
+      "column": 4,
       "frames": 4
     }
   }

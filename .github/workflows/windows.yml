@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   windows:
-    name: Windows ${{ matrix.build }}
+    name: Windows (${{ matrix.build }})
     strategy:
       fail-fast: false
       matrix:
@@ -41,11 +41,3 @@ jobs:
       - name: Test
         shell: pwsh
         run: ctest --test-dir build --build-config ${{ matrix.build }} --output-on-failure --timeout 180 -j 4
-
-      - name: Upload the executable
-        if: ${{ matrix.build == 'Release' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: zalie-windows-x64
-          path: build/bin/Release/zalie.exe
-          retention-days: 7

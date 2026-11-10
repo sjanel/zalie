@@ -1,5 +1,6 @@
 #include "zalie/curl-import.hpp"
 
+#include <aeronet/cctype.hpp>
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -10,6 +11,7 @@
 #include <system_error>
 #include <utility>
 
+#include "zalie/encoding.hpp"
 #include "zalie/key-value.hpp"
 #include "zalie/method.hpp"
 #include "zalie/raw-chars.hpp"
@@ -22,56 +24,10 @@ namespace zalie {
 
 namespace {
 
-constexpr int HexDigit(char ch) noexcept {
-  if (ch >= '0' && ch <= '9') {
-    return ch - '0';
-  }
-  if (ch >= 'a' && ch <= 'f') {
-    return ch - 'a' + 10;
-  }
-  if (ch >= 'A' && ch <= 'F') {
-    return ch - 'A' + 10;
-  }
-  return -1;
-}
-
-// Appends the UTF-8 encoding of a code point.
-void AppendUtf8(char32_t codePoint, RawChars32& out) {
-  if (codePoint < 0x80) {
-    out.push_back(static_cast<char>(codePoint));
-  } else if (codePoint < 0x800) {
-    out.push_back(static_cast<char>(0xC0 | (codePoint >> 6)));
-    out.push_back(static_cast<char>(0x80 | (codePoint & 0x3F)));
-  } else if (codePoint < 0x10000) {
-    out.push_back(static_cast<char>(0xE0 | (codePoint >> 12)));
-    out.push_back(static_cast<char>(0x80 | ((codePoint >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (codePoint & 0x3F)));
-  } else {
-    out.push_back(static_cast<char>(0xF0 | (codePoint >> 18)));
-    out.push_back(static_cast<char>(0x80 | ((codePoint >> 12) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | ((codePoint >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (codePoint & 0x3F)));
-  }
-}
-
-// Reads up to 'maxDigits' hexadecimal digits at 'pos'. Returns the number of digits read (0 if none).
-std::size_t ReadHex(std::string_view str, std::size_t pos, std::size_t maxDigits, char32_t& value) noexcept {
-  std::size_t nbDigits = 0;
-  value = 0;
-  while (nbDigits < maxDigits && pos + nbDigits < str.size()) {
-    const int digit = HexDigit(str[pos + nbDigits]);
-    if (digit < 0) {
-      break;
-    }
-    value = (value << 4U) | static_cast<char32_t>(digit);
-    ++nbDigits;
-  }
-  return nbDigits;
-}
-
 // Decodes the content of an ANSI-C quoted string $'...' starting after the opening quote. Returns the position after
 // the closing quote, or npos if unterminated.
 std::size_t ReadAnsiCQuoted(std::string_view cmd, std::size_t pos, RawChars32& word) {
+  static constexpr std::string_view kSameCharEscapes = "\\'\"?";
   while (pos < cmd.size()) {
     const char ch = cmd[pos++];
     if (ch == '\'') {
@@ -82,81 +38,33 @@ std::size_t ReadAnsiCQuoted(std::string_view cmd, std::size_t pos, RawChars32& w
       continue;
     }
     const char esc = cmd[pos++];
-    switch (esc) {
-      case 'n':
-        word.push_back('\n');
-        break;
-      case 't':
-        word.push_back('\t');
-        break;
-      case 'r':
-        word.push_back('\r');
-        break;
-      case 'a':
-        word.push_back('\a');
-        break;
-      case 'b':
-        word.push_back('\b');
-        break;
-      case 'e':
-      case 'E':
-        word.push_back('\x1B');
-        break;
-      case 'f':
-        word.push_back('\f');
-        break;
-      case 'v':
-        word.push_back('\v');
-        break;
-      case 'x': {
-        char32_t value = 0;
-        const std::size_t nbDigits = ReadHex(cmd, pos, 2, value);
-        if (nbDigits == 0) {
-          word.append(std::string_view{"\\x"});
-        } else {
-          word.push_back(static_cast<char>(value));
-          pos += nbDigits;
-        }
-        break;
-      }
-      case 'u':
-      case 'U': {
-        char32_t value = 0;
-        const std::size_t nbDigits = ReadHex(cmd, pos, esc == 'u' ? 4 : 8, value);
-        if (nbDigits == 0) {
-          word.push_back('\\');
-          word.push_back(esc);
-        } else {
-          AppendUtf8(value, word);
-          pos += nbDigits;
-        }
-        break;
-      }
-      case '0':
-      case '1':
-      case '2':
-      case '3':
-      case '4':
-      case '5':
-      case '6':
-      case '7': {
-        unsigned value = static_cast<unsigned>(esc - '0');
-        for (int i = 0; i < 2 && pos < cmd.size() && cmd[pos] >= '0' && cmd[pos] <= '7'; ++i, ++pos) {
-          value = (value * 8U) + static_cast<unsigned>(cmd[pos] - '0');
-        }
+    if (const char control = ControlEscape(esc == 'E' ? 'e' : esc); control != '\0') {
+      word.push_back(control);
+    } else if (esc == 'x' || esc == 'u' || esc == 'U') {
+      // \xHH is a byte, \uHHHH and \UHHHHHHHH are code points.
+      const std::size_t maxDigits = esc == 'x' ? 2 : (esc == 'u' ? 4 : 8);
+      char32_t value = 0;
+      const std::size_t nbDigits = ReadHex(cmd.substr(pos), maxDigits, value);
+      pos += nbDigits;
+      if (nbDigits == 0) {
+        AppendAll(word, '\\', esc);  // not an escape: kept as written
+      } else if (esc == 'x') {
         word.push_back(static_cast<char>(value));
-        break;
+      } else {
+        word.ensureAvailableCapacityExponential(kMaxUtf8Size);
+        word.setEnd(AppendUtf8(value, word.end()));
       }
-      case '\\':
-      case '\'':
-      case '"':
-      case '?':
-        word.push_back(esc);
-        break;
-      default:
-        word.push_back('\\');
-        word.push_back(esc);
-        break;
+    } else if (esc >= '0' && esc <= '7') {
+      // Up to 3 octal digits.
+      unsigned value = static_cast<unsigned>(esc - '0');
+      for (int i = 0; i < 2 && pos < cmd.size() && cmd[pos] >= '0' && cmd[pos] <= '7'; ++i, ++pos) {
+        value = (value * 8U) + static_cast<unsigned>(cmd[pos] - '0');
+      }
+      word.push_back(static_cast<char>(value));
+    } else if (kSameCharEscapes.contains(esc)) {
+      word.push_back(esc);
+    } else {
+      AppendAll(word, '\\', esc);
     }
   }
   return std::string_view::npos;
@@ -465,11 +373,11 @@ void ApplyData(ParseState& state) {
     contentType = "application/json";  // what the author meant, even if curl would label it as a form
   }
 
-  if (FindIgnoreCase(contentType, "json") != std::string_view::npos) {
+  if (ContainsIgnoreCase(contentType, "json")) {
     req.bodyMode = BodyMode::json;
-  } else if (FindIgnoreCase(contentType, "xml") != std::string_view::npos) {
+  } else if (ContainsIgnoreCase(contentType, "xml")) {
     req.bodyMode = BodyMode::xml;
-  } else if (contentType.empty() || FindIgnoreCase(contentType, "x-www-form-urlencoded") != std::string_view::npos) {
+  } else if (contentType.empty() || ContainsIgnoreCase(contentType, "x-www-form-urlencoded")) {
     // curl's default for -d. Decoded into editable fields; re-encoded identically at send time.
     KeyValues fields;
     ParseQuery(state.data, fields);
@@ -514,7 +422,9 @@ bool LooksLikeCurlCommand(std::string_view text) noexcept {
 
 std::expected<StringList, RawChars32> SplitShellWords(std::string_view cmd) {
   StringList words(cmd.size());
-  RawChars32 word;  // one scratch buffer for every word, stored in the arena of 'words' once complete
+  // One scratch buffer for every word, stored in the arena of 'words' once complete. No word is longer than the
+  // command: it never grows.
+  RawChars32 word(cmd.size());
   bool inWord = false;
   const auto endWord = [&] {
     if (inWord) {
@@ -530,7 +440,7 @@ std::expected<StringList, RawChars32> SplitShellWords(std::string_view cmd) {
       pos = SkipLineContinuation(cmd, pos);
       continue;
     }
-    if (IsSpace(ch)) {
+    if (aeronet::isspace(ch)) {
       endWord();
       ++pos;
       continue;

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cfloat>
 #include <charconv>
 #include <cmath>
@@ -38,11 +39,9 @@ float TextWidth(ImFont* pFont, float fontSize, std::string_view text) {
   return pFont->CalcTextSizeA(fontSize, FLT_MAX, 0.0F, text.data(), text.data() + text.size()).x;
 }
 
-// Copies the selected lines (or everything) to the clipboard.
+// Copies the selected lines to the clipboard (a selection needs a line).
 void CopyLines(std::string_view text, const LineIndex& lines, std::size_t first, std::size_t last) {
-  if (lines.empty()) {
-    return;
-  }
+  assert(!lines.empty());
   last = std::min(last, lines.size() - 1);
   const std::size_t begin = lines.lineBegin(first);
   const std::string_view lastLine = lines.line(text, last);

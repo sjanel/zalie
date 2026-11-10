@@ -58,8 +58,8 @@ The interface themes (`src/ui/src/theme.cpp`) reuse it:
 | `assets/logo/zalie-face.svg`, `zalie-face-256.png` | the face alone, without the badge |
 | `assets/sprites/zalie-sprites.png` | the sprite sheet, embedded in the executable |
 | `assets/sprites/zalie-sprites.json` | its layout |
-| `assets/sprites/zalie-run.svg`, `zalie-sleep.svg` | first frame of each animation, vector |
-| `assets/sprites/zalie-run.gif` | animated preview of the gallop (documentation) |
+| `assets/sprites/zalie-run.svg`, `zalie-sleep.svg`, `zalie-eat.svg` | first frame of each animation, vector |
+| `assets/sprites/zalie-run.gif`, `zalie-eat.gif` | animated previews of the gallop and of the meal (documentation) |
 
 ## Sprite sheet
 
@@ -75,17 +75,33 @@ background:
 | Row | Animation | Frames | Rate | Shown |
 | --- | --------- | ------ | ---- | ----- |
 | 0 | `run`: a gallop cycle, ears and tail flying | 8 | 14 fps | while a request is in flight |
-| 1 | `sleep`: curled up, breathing | 4 | 2.5 fps | in the response panel before the first request |
+| 1 | `sleep`: curled up, breathing | 4 | 2.5 fps | in the response panel before the first request, after a run |
+| 2, columns 0-3 | `eat`: chomping, tearing a bite off, licking her chops | 4 | 10 fps | during a run |
+| 2, columns 4-7 | `meat`: whole, bitten, half eaten, bare bone | 4 | progress of the run | behind `eat` |
 
 ![Sprite sheet](../assets/zalie-sprites.png)
 
-The layout is mirrored in `src/ui/src/assets.cpp` (`kFrameWidth`, `kRunFrames`...). The sleeping dog does not
-keep the event loop awake: she breathes at the pace of the redraws that happen anyway.
+The layout is mirrored in `src/ui/src/assets.cpp` (`kFrameWidth`, `kAnimations`, `kMeat`). The sleeping and the
+eating dog do not keep the event loop awake: they move at the pace of the redraws that happen anyway (the snapshots of
+a run come about 10 times per second, hence the rate of `eat`).
 
 Each leg is a fluffy chain of two segments (`leg()`) whose angles follow sines of the cycle phase, folding the paw
 back under the body. The body stretches when the legs reach out and rises when they gather (the suspension phase of
 a gallop), the far legs are darker and slightly out of phase, the tail wags at twice the stride frequency, and the
 head and ear follow with a small delay.
+
+<div class="zalie-hero" markdown>
+
+![Zalie eating her meat](../assets/zalie-eat.gif){ width="240" }
+
+</div>
+
+The meal is two layers, so that the meat can follow the progress of a run while Zalie chomps at her own pace: the
+meat (`meat()`) is drawn first, the dog (`eating_dog()`, a bit smaller than in the other animations) over it, the
+same position in every frame. The meat on the bone is an ellipse with grill marks and a shine; each stage adds bites
+cut with SVG masks, in the spirit of the fur trick: an outline layer cut by the bites shrunk by half the outline
+width, the juicy flesh cut by the bites, the roasted surface cut by the bites enlarged by a band, which leaves an
+outline and a pink cut along the bitten edges only. The bone, under the meat, shows where it is eaten.
 
 !!! note "More photos welcome"
     The drawings were made from three photos of Zalie. Side views of her standing or running would help refine

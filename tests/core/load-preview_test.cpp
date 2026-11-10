@@ -6,6 +6,7 @@
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "test-utils.hpp"
 #include "zalie/collection.hpp"
@@ -102,8 +103,24 @@ TEST_F(LoadPreviewTest, SavedParametersMatchTheirRows) {
   EXPECT_EQ(rows[8].parameter, 2U);
   EXPECT_FALSE(rows[8].queryParameter);
   EXPECT_TRUE(rows[8].unused);
+  EXPECT_FALSE(rows[8].added);
   EXPECT_EQ(rows[9].parameter, 3U);
   EXPECT_TRUE(rows[9].unused);
+}
+
+TEST_F(LoadPreviewTest, AQueryParameterTheRequestDoesNotHaveIsAddedForTheRun) {
+  request.load.emplace();
+  request.load->parameters.push_back(Parameter("extra", ValueSource::list, true));
+  request.load->parameters.push_back(Parameter("", ValueSource::fixed, true));  // just added, no name yet
+  listRows();
+  ASSERT_GE(rows.size(), 2U);
+  for (std::uint32_t idx = rows.size() - 2; idx < rows.size(); ++idx) {
+    EXPECT_TRUE(rows[idx].queryParameter);
+    EXPECT_TRUE(rows[idx].added);
+    EXPECT_FALSE(rows[idx].unused);
+  }
+  EXPECT_EQ(View(rows[rows.size() - 2].name), "extra");
+  EXPECT_EQ(rows.back().parameter, 1U);
 }
 
 TEST_F(LoadPreviewTest, BodyFormAndBasicAuthenticationAreSearched) {

@@ -41,10 +41,4 @@ inline constexpr std::array kSnippetLanguages{
 // Writes (replaces) in 'out' the snippet sending 'request' in 'language'.
 void GenerateSnippet(SnippetLanguage language, const ResolvedRequest& request, RawChars32& out);
 
-// Quotes a string for a POSIX shell (single quotes), appending to 'out'.
-void AppendShellQuoted(std::string_view str, RawChars32& out);
-
-// Appends a double-quoted string literal with C-like escapes, valid in JSON, JavaScript, Python and Go.
-void AppendDoubleQuoted(std::string_view str, RawChars32& out);
-
 }  // namespace zalie

@@ -19,7 +19,7 @@ clang-format -i $(git ls-files '*.hpp' '*.cpp')
 | `src/app` | `zalie`: `main()`, GLFW window, OpenGL renderer, command line |
 | `tests` | unit, integration and headless UI tests, import fixtures in `tests/data` |
 | `assets` | logo and sprite sheet (generated, see [Artwork](artwork.md)) |
-| `cmake` | project settings, pinned dependencies, file embedding |
+| `cmake` | project settings, pinned dependencies, file embedding, packages (CPack) |
 | `docs`, `mkdocs.yml` | this documentation |
 | `tools` | asset generator, screenshot script |
 | `packaging` | Linux desktop entry |
@@ -75,5 +75,29 @@ Screenshots are regenerated with `tools/take-screenshots.sh` (see [Testing](test
 
 ## Releases
 
-The version lives in the `VERSION` file only (read by CMake, shown by `zalie --version`). Update
-[the changelog](../CHANGELOG.md) in the same commit.
+The version lives in the `VERSION` file only (read by CMake, shown by `zalie --version`). Between two releases it
+is the next version with a `-dev` suffix (`0.2.0-dev` after `0.1.0`), and its section of
+[the changelog](../CHANGELOG.md) is `## [0.2.0] - Unreleased`. Update the changelog in the same commit as the change.
+
+The [Packages workflow](https://github.com/sjanel/zalie/actions/workflows/package.yml) (`.github/workflows/package.yml`)
+builds the Release packages of the three platforms (see [Download](../getting-started/install.md#download)) on each
+push to `main`, on the pull requests that change the packaging, and on demand. Each package is installed or run on
+the runner before its upload: the `.deb` on fresh Ubuntu 24.04 and Debian 13 containers, the Windows executable with
+only the system directories in its `PATH`, the macOS bundle checked for leftover references to Homebrew.
+
+- **Development builds**: on a push to `main` of a `-dev` version, the packages replace those of the
+  [`dev` pre-release](https://github.com/sjanel/zalie/releases/tag/dev), deleted and created again on the new commit
+  (with its tag). Only the latest development build is kept.
+- **Releases**: to release version `X.Y.Z`,
+    1. drop the suffix (`X.Y.Z` in `VERSION`) and replace `Unreleased` by the date in the changelog;
+    2. tag that commit `vX.Y.Z` and push the tag (`git tag vX.Y.Z && git push origin vX.Y.Z`); the workflow fails if
+       the tag does not match `VERSION`;
+    3. the workflow attaches the packages and their SHA-256 to a **draft** release, with the section of the changelog
+       as notes: review it on the [Releases](https://github.com/sjanel/zalie/releases) page, then publish it (a
+       release created from the GitHub interface instead gets the packages attached once the workflow ends);
+    4. start the next version: `X.Y+1.0-dev` in `VERSION`, and a new `## [X.Y+1.0] - Unreleased` section in the
+       changelog.
+
+The `dev` tag moves at each push to `main`: a `git fetch --tags` (or a pull from an editor that fetches tags) of a
+clone that has the previous one refuses to update it (*would clobber existing tag*). `git fetch --tags --force`
+updates it.
