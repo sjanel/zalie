@@ -240,12 +240,13 @@ void App::drawUrlBar(RequestTab& tab, Request& request) {
   }
   ImGui::SameLine(0, 4.0F * scale);
   const float sendWidth = 96.0F * scale;
-  const float menuWidth = ImGui::GetFrameHeight() * 0.8F;
-  const float menuGap = 1.0F * scale;
+  const float iconSize = ImGui::GetFontSize() * 0.95F;
+  const float perfWidth =
+      ImGui::CalcTextSize("Performance").x + iconSize + (ImGui::GetFontSize() * 0.4F) + (style.FramePadding.x * 2.0F);
   const bool canSave = tab.requestId == 0 && _workspace.size() != 0;
   const float saveWidth = canSave ? 80.0F * scale : 0.0F;
-  ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - sendWidth - menuGap - menuWidth - saveWidth -
-                          (style.ItemSpacing.x * (canSave ? 2.0F : 1.0F)));
+  ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - sendWidth - perfWidth - saveWidth -
+                          (style.ItemSpacing.x * (canSave ? 3.0F : 2.0F)));
   if (tab.focusUrl) {
     ImGui::SetKeyboardFocusHere();
     tab.focusUrl = false;
@@ -327,40 +328,26 @@ void App::drawUrlBar(RequestTab& tab, Request& request) {
     if (PrimaryButton("##fetch", ImVec2(sendWidth, 0))) {
       sendActiveTab();
     }
-    DrawItemIconLabel(Icon::paw, ImGui::GetFontSize() * 0.95F, "Fetch", pal.onAccent);
+    DrawItemIconLabel(Icon::paw, iconSize, "Fetch", pal.onAccent);
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     ImGui::SetTooltip(tab.pending() ? "Cancel (Esc)" : "Fetch (Ctrl+Enter)");
   }
-  // The menu of the Fetch button, joined to it.
-  ImGui::SameLine(0, menuGap);
-  ImGui::PushStyleColor(ImGuiCol_Button, pal.accent);
-  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, pal.accentHover);
-  ImGui::PushStyleColor(ImGuiCol_ButtonActive, pal.accentActive);
+  // Its Performance tab, as large as Fetch but outlined: Fetch stays the main action.
+  ImGui::SameLine();
   ImGui::PushStyleColor(ImGuiCol_Border, pal.accent);
-  if (ImGui::Button("##fetchMenu", ImVec2(menuWidth, 0))) {
-    ImGui::OpenPopup("##fetchMenuPopup");
+  ImGui::PushStyleColor(ImGuiCol_Button, WithAlpha(pal.accent, 0.08F));
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, WithAlpha(pal.accent, 0.18F));
+  ImGui::PushStyleColor(ImGuiCol_ButtonActive, WithAlpha(pal.accent, 0.28F));
+  if (ImGui::Button("##performance", ImVec2(perfWidth, 0))) {
+    openPerformanceTab(_activeTab);
   }
   ImGui::PopStyleColor(4);
-  {
-    const ImVec2 min = ImGui::GetItemRectMin();
-    const ImVec2 max = ImGui::GetItemRectMax();
-    DrawIcon(ImGui::GetWindowDrawList(), Icon::chevronDown, ImVec2((min.x + max.x) * 0.5F, (min.y + max.y) * 0.5F),
-             ImGui::GetFontSize() * 0.7F, pal.onAccent);
-  }
+  DrawItemIconLabel(Icon::pawPrints, iconSize, "Performance", pal.accent);
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("More ways to send the request");
+    ImGui::SetTooltip("Performance test of this request (Ctrl+Shift+Enter)");
   }
   ImGui::PopStyleVar();
-  if (ImGui::BeginPopup("##fetchMenuPopup")) {
-    if (ImGui::MenuItem("Fetch", "Ctrl+Enter", false, !tab.pending())) {
-      sendActiveTab();
-    }
-    if (ImGui::MenuItem("Performance test...")) {
-      openPerformanceTab(_activeTab);
-    }
-    ImGui::EndPopup();
-  }
 
   // Resolved URL preview when variables are used.
   if (View(request.url).contains("{{")) {

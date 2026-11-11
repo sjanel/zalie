@@ -248,7 +248,7 @@ TEST_F(LoadRunnerTest, TheAdaptiveRateRisesWhileHealthyAndBacksOffWhenThrottled)
       {.durationMs = 40000, .minRequestsPerSecond = 100, .connections = 8, .maxConnections = 8, .adaptiveRate = true});
   const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + 30s;
   std::shared_ptr<const LoadSnapshot> snapshot = runner.snapshot();
-  while ((snapshot->rateState != RateState::backOff || snapshot->statuses.empty() ||
+  while ((snapshot->rateState != RateState::failing || snapshot->statuses.empty() ||
           snapshot->statuses.back().status != 429) &&
          std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(20ms);
@@ -266,10 +266,49 @@ TEST_F(LoadRunnerTest, TheAdaptiveRateRisesWhileHealthyAndBacksOffWhenThrottled)
   ASSERT_FALSE(snapshot->statuses.empty());
   EXPECT_EQ(snapshot->statuses.back().status, 429);
   EXPECT_DOUBLE_EQ(snapshot->targetRequestsPerSecond, 100.0);
-  EXPECT_EQ(snapshot->rateState, RateState::backOff);
+  EXPECT_EQ(snapshot->rateState, RateState::failing);
   EXPECT_GE(snapshot->sustainedRequestsPerSecond, 95.0);   // reached before raising the rate
   EXPECT_LT(snapshot->sustainedRequestsPerSecond, 200.0);  // the doubled rate was not healthy
   EXPECT_GT(snapshot->baselineP50Ns, 0U);
+}
+
+// Runs until the adaptive rate aims at 'target' requests per second at least, or a deadline. Returns its final state.
+std::shared_ptr<const LoadSnapshot> RunUntilTarget(LoadRunner& runner, double target) {
+  const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + 25s;
+  while (runner.snapshot()->targetRequestsPerSecond < target && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(20ms);
+  }
+  runner.stop();
+  EXPECT_TRUE(runner.waitForCompletion(10s));
+  return runner.snapshot();
+}
+
+TEST_F(LoadRunnerTest, ARaisedRateAppliesAtOnceWhateverTheConnections) {
+  // 16 connections at 20 requests per second each hold a send slot, 50 ms apart: if they kept them, a raised rate would
+  // wait 0.8 s for them, its seconds would look short of their target and the rate would fall back (client limited).
+  // Doubling every second: 20, 40, 80, 160, 320 within a few seconds.
+  LoadRunner runner(
+      makeRequest("/ok"),
+      {.durationMs = 40000, .minRequestsPerSecond = 20, .connections = 16, .maxConnections = 16, .adaptiveRate = true});
+  const auto snapshot = RunUntilTarget(runner, 320.0);
+  SCOPED_TRACE(DescribeSeries(*snapshot));
+  EXPECT_GE(snapshot->targetRequestsPerSecond, 320.0);
+  EXPECT_LT(snapshot->elapsedSeconds, 20.0);
+}
+
+TEST_F(LoadRunnerTest, TheAdaptiveRateBisectsUpToItsMaximum) {
+  // From 50 to 2000: 316, then 795, 1261, 1588... on a server that takes them all.
+  LoadRunner runner(makeRequest("/ok"), {.durationMs = 40000,
+                                         .maxRequestsPerSecond = 2000,
+                                         .minRequestsPerSecond = 50,
+                                         .connections = 16,
+                                         .maxConnections = 16,
+                                         .adaptiveRate = true});
+  const auto snapshot = RunUntilTarget(runner, 1500.0);
+  SCOPED_TRACE(DescribeSeries(*snapshot));
+  EXPECT_GE(snapshot->targetRequestsPerSecond, 1500.0);
+  EXPECT_LT(snapshot->elapsedSeconds, 20.0);
+  EXPECT_LE(snapshot->targetRequestsPerSecond, 2000.0);
 }
 
 TEST(LoadOptions, TheAdaptiveRateComesFromTheSettings) {
@@ -329,16 +368,36 @@ TEST_F(LoadRunnerTest, AConnectionErrorHasNoResponseTime) {
   ResolvedRequest request;
   request.url = request.strings.store("http://127.0.0.1:1/");  // nothing listens on this port
   request.settings.timeoutMs = 2000;
-  const auto snapshot = runToEnd(std::move(request), RequestsOnly(5, 1));
-  EXPECT_EQ(snapshot->requests(), 5U);
-  EXPECT_EQ(snapshot->counts[kClassError], 5U);
+  const auto snapshot = runToEnd(std::move(request), RequestsOnly(2, 1));  // too few to stop the run
+  EXPECT_EQ(snapshot->requests(), 2U);
+  EXPECT_EQ(snapshot->counts[kClassError], 2U);
   const LoadErrorStats& errors = snapshot->errors[static_cast<std::size_t>(LoadErrorKind::connection)];
-  EXPECT_EQ(errors.count, 5U);
+  EXPECT_EQ(errors.count, 2U);
   EXPECT_FALSE(errors.firstMessage.empty());
   EXPECT_EQ(snapshot->total.count, 0U);
   EXPECT_EQ(snapshot->head.count, 0U);
-  EXPECT_EQ(snapshot->byClass[kClassError].count, 5U);
+  EXPECT_EQ(snapshot->byClass[kClassError].count, 2U);
   EXPECT_TRUE(snapshot->statuses.empty());
+  EXPECT_TRUE(snapshot->stopReason.empty());
+}
+
+TEST_F(LoadRunnerTest, AServerThatNeverRespondsStopsTheRun) {
+  ResolvedRequest request;
+  request.url = request.strings.store("http://127.0.0.1:1/");
+  request.settings.timeoutMs = 2000;
+  // One failure per connection, 3 at least: during the warm-up too.
+  const auto snapshot =
+      runToEnd(std::move(request), {.durationMs = 25000, .warmupMs = 1000, .connections = 4, .maxConnections = 4});
+  EXPECT_EQ(std::string_view(snapshot->stopReason), "No response from the server after 4 requests: connection failed");
+  EXPECT_LT(snapshot->elapsedSeconds, 20.0);
+  EXPECT_TRUE(snapshot->setupError.empty());
+  // A single connection: 3 failures, whatever their kind.
+  ResolvedRequest slow = makeRequest("/slow");
+  slow.settings.timeoutMs = 50;
+  const auto timedOut = runToEnd(std::move(slow), {.durationMs = 25000, .connections = 1, .maxConnections = 1});
+  EXPECT_EQ(std::string_view(timedOut->stopReason),
+            "No response from the server after 3 requests: operation timed out");
+  EXPECT_EQ(timedOut->errors[static_cast<std::size_t>(LoadErrorKind::timeout)].count, 3U);
 }
 
 TEST_F(LoadRunnerTest, ATimeoutIsAnErrorOfItsOwnKind) {
@@ -532,6 +591,34 @@ TEST_F(LoadRunnerPlanTest, BodiesAndHeadersVaryForEachRequest) {
   std::scoped_lock lock(_capturedMutex);
   EXPECT_EQ(_capturedBody, R"({"q":"say \"x\""})");
   EXPECT_EQ(_capturedHeader, "h-say \"x\"");
+  EXPECT_EQ(_capturedContentType, "application/json");
+}
+
+TEST_F(LoadRunnerPlanTest, TheBodyOrItsJsonFieldsVaryForEachRequest) {
+  _request.method = Method::post;
+  _request.bodyMode = BodyMode::text;
+  _request.body.assign(std::string_view{"hello"});
+  LoadParameter body = ListParameter("", "first\nsecond");
+  body.target = ParameterTarget::body;
+  _settings.parameters.push_back(std::move(body));
+  const auto send = [&](std::uint64_t nbRequests) {
+    LoadRunner runner(compile("/capture"), RequestsOnly(nbRequests, 1));
+    ASSERT_TRUE(runner.waitForCompletion(30s));
+    EXPECT_EQ(runner.snapshot()->counts[kClass2xx], nbRequests);
+  };
+  send(2);
+  {
+    std::scoped_lock lock(_capturedMutex);
+    EXPECT_EQ(_capturedBody, "second");
+    EXPECT_EQ(_capturedContentType, "text/plain");
+  }
+  _request.bodyMode = BodyMode::json;
+  _request.body.assign(std::string_view{R"({"text": "hello", "n": 1})"});
+  _settings.parameters[0] = ListParameter("$.text", "say \"hi\"");
+  _settings.parameters[0].target = ParameterTarget::jsonField;
+  send(1);
+  std::scoped_lock lock(_capturedMutex);
+  EXPECT_EQ(_capturedBody, R"({"text": "say \"hi\"", "n": 1})");
   EXPECT_EQ(_capturedContentType, "application/json");
 }
 

@@ -619,7 +619,7 @@ TEST_F(AppTest, PerformanceRunAgainstALocalServer) {
   LoadSettings& settings = source.scratch.load.emplace();
   LoadParameter page;
   page.name.assign(std::string_view{"page"});
-  page.queryParameter = true;
+  page.target = ParameterTarget::queryParameter;
   page.source = ValueSource::integerRange;
   page.integerFrom = 1;
   page.integerTo = 50;
@@ -633,7 +633,7 @@ TEST_F(AppTest, PerformanceRunAgainstALocalServer) {
   // The query parameters are rows: the varied page and the fixed term.
   ASSERT_EQ(tab.perf->rows.size(), 2U);
   EXPECT_EQ(tab.perf->rows[0].parameter, 0U);
-  EXPECT_TRUE(tab.perf->rows[1].queryParameter);
+  EXPECT_EQ(tab.perf->rows[1].target, ParameterTarget::queryParameter);
   EXPECT_EQ(View(tab.perf->preview->samples[0]), "1, 2, 3, 4, 5");
   ASSERT_FALSE(tab.perf->preview->requests.empty());
   EXPECT_TRUE(View(tab.perf->preview->requests[0].line).ends_with("/items?page=1&q=dog"));

@@ -117,10 +117,12 @@ void ListLoadRows(const Request& request, const Collection& collection, const Va
   for (const KeyValue& param : request.params) {
     const std::string_view key = Trim(param.key);
     if (!param.enabled || key.empty() || View(param.key).contains("{{") || View(param.value).contains("{{") ||
-        std::ranges::any_of(rows, [key](const LoadRow& row) { return row.queryParameter && View(row.name) == key; })) {
+        std::ranges::any_of(rows, [key](const LoadRow& row) {
+          return row.target == ParameterTarget::queryParameter && View(row.name) == key;
+        })) {
       continue;
     }
-    rows.push_back({.name = RawChars32(key), .defaultValue = param.value, .queryParameter = true});
+    rows.push_back({.name = RawChars32(key), .defaultValue = param.value, .target = ParameterTarget::queryParameter});
   }
 
   if (!request.load) {
@@ -130,18 +132,30 @@ void ListLoadRows(const Request& request, const Collection& collection, const Va
   for (std::uint32_t idx = 0; idx < parameters.size(); ++idx) {
     const LoadParameter& parameter = parameters[idx];
     const std::string_view name = Trim(parameter.name);
-    auto it = std::ranges::find_if(rows, [&](const LoadRow& row) {
-      return row.parameter == LoadRow::kNoParameter && row.queryParameter == parameter.queryParameter &&
-             View(row.name) == name;
-    });
-    if (it != rows.end()) {
-      it->parameter = idx;
-    } else {
-      rows.push_back({.name = RawChars32(name),
-                      .parameter = idx,
-                      .queryParameter = parameter.queryParameter,
-                      .unused = !parameter.queryParameter,
-                      .added = parameter.queryParameter});
+    const bool ofTheRequest =
+        parameter.target == ParameterTarget::variable || parameter.target == ParameterTarget::queryParameter;
+    if (ofTheRequest) {
+      auto it = std::ranges::find_if(rows, [&](const LoadRow& row) {
+        return row.parameter == LoadRow::kNoParameter && row.target == parameter.target && View(row.name) == name;
+      });
+      if (it != rows.end()) {
+        it->parameter = idx;
+        continue;
+      }
+    }
+    rows.push_back({.name = RawChars32(name),
+                    .parameter = idx,
+                    .target = parameter.target,
+                    .unused = parameter.target == ParameterTarget::variable,
+                    .added = parameter.target != ParameterTarget::variable});
+    LoadRow& row = rows.back();
+    if (parameter.target == ParameterTarget::body) {
+      row.defaultValue.assign(Shorten(request.body, LoadPreview::kMaxBodyBytes));
+    } else if (parameter.target == ParameterTarget::jsonField && request.bodyMode == BodyMode::json && !name.empty()) {
+      if (const auto spans = JsonFieldSpans(request.body, name); spans) {
+        const TextSpan& first = spans->front();
+        row.defaultValue.assign(View(request.body).substr(first.begin, first.end - first.begin));
+      }
     }
   }
 }

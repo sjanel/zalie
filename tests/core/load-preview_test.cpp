@@ -2,8 +2,10 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -26,7 +28,7 @@ LoadParameter Parameter(std::string_view name, ValueSource source, bool queryPar
   LoadParameter parameter;
   parameter.name.assign(name);
   parameter.source = source;
-  parameter.queryParameter = queryParameter;
+  parameter.target = queryParameter ? ParameterTarget::queryParameter : ParameterTarget::variable;
   return parameter;
 }
 
@@ -83,9 +85,9 @@ TEST_F(LoadPreviewTest, RowsListTheVariablesThenTheQueryParameters) {
   EXPECT_TRUE(rows[2].undefined);
   EXPECT_TRUE(rows[3].undefined);
   EXPECT_EQ(View(rows[5].defaultValue), "secret");
-  EXPECT_TRUE(rows[6].queryParameter);
+  EXPECT_EQ(rows[6].target, ParameterTarget::queryParameter);
   EXPECT_EQ(View(rows[6].defaultValue), "1");
-  EXPECT_FALSE(rows[5].queryParameter);
+  EXPECT_NE(rows[5].target, ParameterTarget::queryParameter);
 }
 
 TEST_F(LoadPreviewTest, SavedParametersMatchTheirRows) {
@@ -98,10 +100,10 @@ TEST_F(LoadPreviewTest, SavedParametersMatchTheirRows) {
   ASSERT_EQ(rows.size(), 10U);
   EXPECT_EQ(rows[3].parameter, 1U);
   EXPECT_EQ(rows[7].parameter, 0U);
-  EXPECT_TRUE(rows[7].queryParameter);
+  EXPECT_EQ(rows[7].target, ParameterTarget::queryParameter);
   EXPECT_EQ(View(rows[8].name), "lang");
   EXPECT_EQ(rows[8].parameter, 2U);
-  EXPECT_FALSE(rows[8].queryParameter);
+  EXPECT_NE(rows[8].target, ParameterTarget::queryParameter);
   EXPECT_TRUE(rows[8].unused);
   EXPECT_FALSE(rows[8].added);
   EXPECT_EQ(rows[9].parameter, 3U);
@@ -115,12 +117,44 @@ TEST_F(LoadPreviewTest, AQueryParameterTheRequestDoesNotHaveIsAddedForTheRun) {
   listRows();
   ASSERT_GE(rows.size(), 2U);
   for (std::uint32_t idx = rows.size() - 2; idx < rows.size(); ++idx) {
-    EXPECT_TRUE(rows[idx].queryParameter);
+    EXPECT_EQ(rows[idx].target, ParameterTarget::queryParameter);
     EXPECT_TRUE(rows[idx].added);
     EXPECT_FALSE(rows[idx].unused);
   }
   EXPECT_EQ(View(rows[rows.size() - 2].name), "extra");
   EXPECT_EQ(rows.back().parameter, 1U);
+}
+
+TEST_F(LoadPreviewTest, TheBodyAndItsJsonFieldsAreRowsOfTheirOwn) {
+  request.bodyMode = BodyMode::json;
+  request.body.assign(std::string_view{R"({"user": {"name": "ann"}, "page": {{page}}, "n": 5})"});
+  request.load.emplace();
+  for (const std::string_view path : {"$.user.name", "page", "n", "$.missing", ""}) {
+    request.load->parameters.push_back(Parameter(path, ValueSource::list));
+    request.load->parameters.back().target = ParameterTarget::jsonField;
+  }
+  request.load->parameters.push_back(Parameter("", ValueSource::list));
+  request.load->parameters.back().target = ParameterTarget::body;
+  listRows();
+  ASSERT_GE(rows.size(), 6U);
+  const std::span<const LoadRow> added(rows.end() - 6, rows.end());
+  for (std::uint32_t idx = 0; idx < 6; ++idx) {
+    EXPECT_EQ(added[idx].parameter, idx);
+    EXPECT_TRUE(added[idx].added);
+    EXPECT_FALSE(added[idx].unused);
+  }
+  // Their value in the request: inside the quotes of a string, the placeholder, nothing when the path matches nothing.
+  EXPECT_EQ(View(added[0].defaultValue), "ann");
+  EXPECT_EQ(View(added[1].defaultValue), "{{page}}");
+  EXPECT_EQ(View(added[2].defaultValue), "5");
+  EXPECT_TRUE(added[3].defaultValue.empty());
+  EXPECT_TRUE(added[4].defaultValue.empty());
+  EXPECT_EQ(added[5].target, ParameterTarget::body);
+  EXPECT_EQ(View(added[5].defaultValue), View(request.body));
+  // Not a JSON body: no field value.
+  request.bodyMode = BodyMode::text;
+  listRows();
+  EXPECT_TRUE(rows[rows.size() - 6].defaultValue.empty());
 }
 
 TEST_F(LoadPreviewTest, BodyFormAndBasicAuthenticationAreSearched) {

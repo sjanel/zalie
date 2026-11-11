@@ -64,6 +64,11 @@ constexpr std::uint32_t kNoLastSecond = std::numeric_limits<std::uint32_t>::max(
 // Above this load the client is considered as the bottleneck (the threshold of the aeronet benchmarks).
 constexpr double kSaturatedClientLoad = 0.9;
 
+// A run whose first requests all fail without a response stops after one per connection, within these bounds: the
+// server cannot be reached. Fewer with few connections, as each failure can take the whole timeout.
+constexpr std::uint32_t kMinFailuresWithoutResponse = 3;
+constexpr std::uint32_t kMaxFailuresWithoutResponse = 10;
+
 constexpr std::string_view kUnexpectedExceptionMessage = "unexpected exception while sending the request";
 constexpr std::string_view kRefusedUrl = "the generated URL is not valid";
 constexpr std::string_view kDefaultContentType = "text/plain";
@@ -527,34 +532,70 @@ class LoadRunner::Impl {
           pFiller != nullptr ? Send(client, std::move(*built), sink) : Send(client, *pConstant, sink);
       worker.inFlight.store(false, std::memory_order_relaxed);
       const TimePoint end = steady_clock::now();
+      if (!_responded.load(std::memory_order_relaxed)) {
+        checkReachable(result);
+      }
       if (!result.stopped && begin >= _measureStart) {
         record(worker, result, sink, begin, end);
       }
     }
   }
 
+  // Until the first response: stops the run after a few failures (warm-up included), the server cannot be reached.
+  // Afterwards, failures are measures.
+  void checkReachable(const SendResult& result) {
+    if (result.status != 0) {
+      _responded.store(true, std::memory_order_relaxed);
+      return;
+    }
+    if (result.stopped) {
+      return;
+    }
+    const std::uint32_t maxFailures =
+        std::clamp(_nbConnections, kMinFailuresWithoutResponse, kMaxFailuresWithoutResponse);
+    const std::uint32_t nbFailures = _failuresWithoutResponse.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (nbFailures == maxFailures) {
+      std::scoped_lock lock(_mutex);
+      if (_responded.load(std::memory_order_relaxed)) {
+        return;
+      }
+      AppendAll(_stopReason, "No response from the server after ", nbFailures, " requests: ", result.errorMessage);
+      if (_stopRequestedAt == TimePoint::max()) {
+        _stopRequestedAt = steady_clock::now();
+      }
+      _stop.store(true, std::memory_order_relaxed);
+    }
+  }
+
   // Waits for the next free send slot of the rate cap, shared by the workers, if there is one. Returns false if the run
   // ends meanwhile. The n-th request cannot start before (n - 1) intervals, whatever the tolerance: the cap holds since
-  // the start. A new interval (adaptive rate) applies from the next slot taken.
+  // the start. When the adaptive rate changes the interval, the waiting workers give up their slots and take new ones:
+  // with one slot reserved per connection, the old interval would otherwise hold for that many intervals (2.4 s for 24
+  // connections at 10 per second).
   [[nodiscard]] bool waitForSlot() {
-    const std::int64_t intervalNs = _slotIntervalNs.load(std::memory_order_relaxed);
-    if (intervalNs == 0) {
-      return true;
-    }
-    const std::int64_t nowNs = ToNs(steady_clock::now() - _start);
-    std::int64_t next = _nextSlotNs.load(std::memory_order_relaxed);
-    std::int64_t slot = 0;
-    do {
-      slot = std::max(next, nowNs - kRateToleranceNs);
-    } while (!_nextSlotNs.compare_exchange_weak(next, slot + intervalNs, std::memory_order_relaxed));
-    while (!_stop.load(std::memory_order_relaxed)) {
-      const std::int64_t remainingNs = slot - ToNs(steady_clock::now() - _start);
-      if (remainingNs <= 0) {
+    while (true) {
+      const std::uint32_t epoch = _slotEpoch.load(std::memory_order_acquire);
+      const std::int64_t intervalNs = _slotIntervalNs.load(std::memory_order_relaxed);
+      if (intervalNs == 0) {
         return true;
       }
-      std::this_thread::sleep_for(std::chrono::nanoseconds(std::min(remainingNs, kMaxSlotSleepNs)));
+      const std::int64_t nowNs = ToNs(steady_clock::now() - _start);
+      std::int64_t next = _nextSlotNs.load(std::memory_order_relaxed);
+      std::int64_t slot = 0;
+      do {
+        slot = std::max(next, nowNs - kRateToleranceNs);
+      } while (!_nextSlotNs.compare_exchange_weak(next, slot + intervalNs, std::memory_order_relaxed));
+      while (_slotEpoch.load(std::memory_order_relaxed) == epoch) {
+        if (_stop.load(std::memory_order_relaxed)) {
+          return false;
+        }
+        const std::int64_t remainingNs = slot - ToNs(steady_clock::now() - _start);
+        if (remainingNs <= 0) {
+          return true;
+        }
+        std::this_thread::sleep_for(std::chrono::nanoseconds(std::min(remainingNs, kMaxSlotSleepNs)));
+      }
     }
-    return false;
   }
 
   void record(Worker& worker, const SendResult& result, const CountingSink& sink, TimePoint begin, TimePoint end) {
@@ -734,8 +775,13 @@ class LoadRunner::Impl {
     const std::uint64_t requests = point.requests() - second.refused;
     const std::uint64_t failures = point.counts[static_cast<std::size_t>(LoadClass::status5xx)] +
                                    point.counts[kErrorClass] - second.refused + second.throttled;
-    if (_pRate->onSecond(second.latency, requests, failures)) {
+    // This second is _oldestOpen: the next one began that long ago, at the current rate.
+    const double lateSeconds = ToSeconds(steady_clock::now() - (_measureStart + std::chrono::seconds(_oldestOpen + 1)));
+    if (_pRate->onSecond(second.latency, requests, failures, lateSeconds)) {
+      // The new rate applies from now: the slots reserved at the previous one are given up (see waitForSlot).
       _slotIntervalNs.store(IntervalNs(_pRate->rate()), std::memory_order_relaxed);
+      _nextSlotNs.store(ToNs(steady_clock::now() - _start), std::memory_order_relaxed);
+      _slotEpoch.fetch_add(1, std::memory_order_release);
     }
   }
 
@@ -825,6 +871,7 @@ class LoadRunner::Impl {
       std::scoped_lock lock(_mutex);
       snapshot->warnings = _warnings;
       snapshot->setupError = _setupError;
+      snapshot->stopReason = _stopReason;
     }
     snapshot->headHistogram = totals.headLatency;
     snapshot->head = Summarize(totals.headLatency);
@@ -866,6 +913,8 @@ class LoadRunner::Impl {
       snapshot->sustainedRequestsPerSecond = _pRate->sustainedRate();
       snapshot->baselineP50Ns = _pRate->baselineP50Ns();
       snapshot->rateState = _pRate->state();
+      snapshot->searchLowRequestsPerSecond = _pRate->searchLow();
+      snapshot->searchHighRequestsPerSecond = _pRate->searchHigh();
     }
     return snapshot;
   }
@@ -893,20 +942,25 @@ class LoadRunner::Impl {
 
   // Written for each request by every worker: kept apart from what the workers only read. The rate cap, when there is
   // one, takes its slot right after the request number: sharing their cache line costs one miss instead of two. Its
-  // interval (0: no cap) only changes with the adaptive rate, about once per second.
+  // interval (0: no cap) only changes with the adaptive rate, about once per second, and its epoch with it.
   alignas(64) std::atomic<std::uint64_t> _nextRequest{0};
   std::atomic<std::int64_t> _nextSlotNs{0};
   std::atomic<std::int64_t> _slotIntervalNs{0};
+  std::atomic<std::uint32_t> _slotEpoch{0};
 
-  // Read for each request and each chunk of body, and written only to end the run.
+  // Read for each request and each chunk of body, and written only to end the run. '_responded' too: set by the first
+  // response, then only read.
   alignas(64) std::atomic<bool> _stop{false};
+  std::atomic<bool> _responded{false};
   std::atomic<std::uint32_t> _nbRunning{0};
+  std::atomic<std::uint32_t> _failuresWithoutResponse{0};
 
   // Guards what follows, and the start, the stop and the end of the run.
   mutable std::mutex _mutex;
   std::condition_variable _condition;
   amc::vector<RawChars32> _warnings;
   RawChars32 _setupError;
+  RawChars32 _stopReason;
   TimePoint _stopRequestedAt{TimePoint::max()};
   std::size_t _nbReady{0};
   bool _spawnDone{false};

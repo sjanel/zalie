@@ -109,19 +109,23 @@ TEST_F(RequestPanelTest, TheMethodAndTheSaveToMenu) {
   EXPECT_EQ(app->breadcrumb(), "Zalie examples / ");
 }
 
-TEST_F(RequestPanelTest, TheFetchButtonAndItsMenu) {
+TEST_F(RequestPanelTest, TheFetchAndPerformanceButtons) {
   ui::RequestTab& tab = newScratch("http://127.0.0.1:1/");
   ASSERT_TRUE(click("##fetch"));
   ASSERT_TRUE(waitResponse());
   EXPECT_EQ(tab.exchange->response.state, ExchangeState::failed);
+  EXPECT_EQ(workspace.history().entries().size(), 1U);
 
-  ASSERT_TRUE(choose("##fetchMenu", "Fetch"));
-  ASSERT_TRUE(waitResponse());
-  EXPECT_EQ(workspace.history().entries().size(), 2U);
-
-  ASSERT_TRUE(choose("##fetchMenu", "Performance test..."));
+  ASSERT_TRUE(click("##performance"));
   ASSERT_EQ(app->tabCount(), 2U);
   EXPECT_NE(app->activeTab()->perf, nullptr);
+  // Its shortcut, from the request: the same Performance tab.
+  press(ImGuiMod_Ctrl | ImGuiKey_Tab);
+  ASSERT_EQ(app->activeTabIndex(), 0U);
+  press(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Enter);
+  EXPECT_EQ(app->tabCount(), 2U);
+  EXPECT_EQ(app->activeTabIndex(), 1U);
+  EXPECT_EQ(workspace.history().entries().size(), 1U);  // nothing sent
 }
 
 TEST_F(RequestPanelTest, ARequestInFlightIsCancelledByItsButtons) {

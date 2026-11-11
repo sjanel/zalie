@@ -93,7 +93,8 @@ A request can carry the settings of its load test in a `load` object. It is left
 | `load.connections` | number of connections, 0 for the number of vCPUs |
 | `load.seed` | equal seeds give equal requests, timestamps aside. 0 picks a new one for each run |
 | `load.combine` | `independent`, `together`, `all-combinations` |
-| `load.parameters[].name` | the `{{variable}}` fed by this row or, with `queryParameter`, the key of a query parameter replaced for the run only (appended to the URL of the run when the request has none) |
+| `load.parameters[].target` | `variable` (default), `query-parameter`, `body` or `json-field`: what the row feeds. All but `variable` change the run only |
+| `load.parameters[].name` | the `{{variable}}`, the key of the query parameter (replaced for the run, appended to its URL when the request has none) or the JSONPath of the JSON field. Not used for `body` |
 | `load.parameters[].source` | `fixed`, `list`, `integer-range`, `decimal-range`, `date-range`, `random-string`, `uuid`, `timestamp`, `data-file`, or `omitted` for a query parameter left out of the run |
 | `load.parameters[].order` | `in-order`, `random`, `shuffled` |
 | `load.parameters[].timestampFormat` | `seconds`, `milliseconds`, `iso8601` |
@@ -122,6 +123,7 @@ sizes in bytes.
   "seed": 42,
   "connections": 32,
   "setupError": "",
+  "stopReason": "",
   "warnings": [],
   "dataFiles": [{ "path": "/data/users.csv", "format": "csv", "rows": 120000, "sizeBytes": 4718592 }],
   "totals": {
@@ -158,6 +160,7 @@ sizes in bytes.
 | ----- | ------- |
 | `request` | the request as written, `{{variables}}` included |
 | `settings` | the [run settings](#run-settings), with the seed actually used: sending the same requests again only needs them |
+| `setupError`, `stopReason` | why the run could not start, and why it stopped before its limits (no response from the server to its first requests). Empty otherwise |
 | `latency`, `headLatency` | times to the end of the body and to the response head of the received responses. The requests without response (connection refused, timeout...) only count in the `error` class |
 | `classes` | requests per class of outcome (`2xx` with `1xx`, `3xx`, `4xx`, `5xx` with the codes above 599, `error` without response), with their own latencies |
 | `errors[].kind` | `connection`, `tls`, `timeout`, `closed`, `malformed`, `too-large`, `other`, `invalid-value` (a generated value refused where it lands: the request was not sent) |

@@ -37,13 +37,26 @@ enum class TimestampFormat : std::uint8_t { seconds, milliseconds, iso8601 };
 // key of the first line).
 enum class DataFileFormat : std::uint8_t { text, csv, jsonLines };
 
+// What a parameter of a run feeds. All but 'variable' change the run only: a normal Fetch sends the request as written.
+enum class ParameterTarget : std::uint8_t {
+  // The {{variable}} 'name'.
+  variable,
+  // The query parameter 'name': replaced in the URL of the run, appended to it when the request has none, left out
+  // with ValueSource::omitted.
+  queryParameter,
+  // The whole text, JSON or XML body of the request ('name' is not used).
+  body,
+  // The values of the JSON body selected by the JSONPath 'name' ("$.user.name", "items[*].id"). A string value stays a
+  // string (the generated value is escaped in it), any other value is replaced by the generated text as it is.
+  jsonField,
+};
+
 // One row of the parameter table of a run. Every source keeps its own fields, so switching source in the UI loses
 // nothing.
 struct LoadParameter {
   bool operator==(const LoadParameter&) const = default;
 
-  // The {{variable}} fed by this row or, with 'queryParameter', the key of a query parameter: replaced in the URL of
-  // the run, appended to it when the request has none.
+  // What 'target' designates: the {{variable}}, the key of the query parameter or the JSONPath in the body.
   RawChars32 name;
   RawChars32 fixedValue;
   // One value per line.
@@ -74,9 +87,7 @@ struct LoadParameter {
   ValueOrder order{ValueOrder::inOrder};
   TimestampFormat timestampFormat{TimestampFormat::seconds};
   DataFileFormat fileFormat{DataFileFormat::csv};
-  // 'name' is the key of a query parameter changed, added or left out for the run only: a normal Fetch keeps the
-  // request as written.
-  bool queryParameter{false};
+  ParameterTarget target{ParameterTarget::variable};
 
   using trivially_relocatable = AllTriviallyRelocatable<RawChars32>;
 };

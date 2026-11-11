@@ -158,6 +158,8 @@ struct LoadSnapshot {
   amc::vector<RawChars32> warnings;
   // Set when the run could not start (invalid URL...).
   RawChars32 setupError;
+  // Set when the run stopped before its limits: no response from the server to its first requests.
+  RawChars32 stopReason;
   // What the run sends: its seed, its data files... Part of the report of the run.
   std::shared_ptr<const LoadPlan> plan;
   // Times to the response head and to the end of the body of the received responses. A failed connection is not a
@@ -189,6 +191,9 @@ struct LoadSnapshot {
   // server was healthy.
   double targetRequestsPerSecond{0.0};
   double sustainedRequestsPerSecond{0.0};
+  // Adaptive rate with a maximum: the bounds of its bisection, both 0 when there is none in progress.
+  double searchLowRequestsPerSecond{0.0};
+  double searchHighRequestsPerSecond{0.0};
   // Adaptive rate: the lowest median response time of a healthy measure, the reference of the next ones.
   std::uint64_t baselineP50Ns{0};
   // Index since the end of the warm-up of the first point of 'series'.
@@ -207,7 +212,7 @@ struct LoadSnapshot {
 // any. Bodies are counted, never kept. The workers publish their statistics without locking, a collector thread merges
 // them about 10 times per second into a snapshot, which is all the UI reads: its cost does not depend on the number of
 // connections. With the adaptive rate, the collector also gives each complete second to a RateController, which sets
-// the rate cap.
+// the rate cap. A run whose first requests all fail without a response stops early: see LoadSnapshot::stopReason.
 class LoadRunner {
  public:
   // Starts the run. An invalid plan ends it at once, with its first issue as 'setupError'.

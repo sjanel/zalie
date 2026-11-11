@@ -100,6 +100,7 @@ struct Report {
   std::uint64_t seed{0};
   std::uint32_t connections{0};
   std::string_view setupError;
+  std::string_view stopReason;
   amc::vector<std::string_view> warnings;
   amc::vector<DataFile> dataFiles;
   Totals totals;
@@ -142,6 +143,7 @@ std::string SerializeLoadReport(const LoadSnapshot& snapshot, const LoadSettings
   out.settings = settings;
   out.connections = snapshot.connections;
   out.setupError = snapshot.setupError;
+  out.stopReason = snapshot.stopReason;
   for (const RawChars32& warning : snapshot.warnings) {
     out.warnings.push_back(warning);
   }

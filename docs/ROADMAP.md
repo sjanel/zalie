@@ -48,10 +48,12 @@ GET {{base}}/search?q={{term}}&page={{page}}&user={{user}}     [Closed: 32 conne
   cap in either model, and the planned volume (the minimum of them all) is shown before the run. A run can also be
   stopped by hand.
 - **Adaptive rate** (done, ahead of step 4): between a min and a max requests per second, the rate follows what the
-  server sustains, like a congestion control. It doubles while the response times stay close to their baseline (the
-  lowest of the healthy measures), rises by small steps after the first sign of load, holds when they rise, and backs
-  off on failures (`5xx`, `429`, no response), on response times far above their baseline, or above an optional p99
-  cap. The result is the sustained rate. The open model will take its arrival rate from the same controller.
+  server sustains, like a congestion control. Without maximum, it doubles every second while the response times stay
+  close to their baseline (the lowest of the healthy measures); with one, it bisects between the min and the max (on
+  a logarithmic scale). Then it rises by small steps, holds when the response times rise, and backs off on failures
+  (`5xx`, `429`, no response), on response times far above their baseline, or above an optional p99 cap. The result
+  is the sustained rate. The open model will take its arrival rate from the same controller.
+- A run whose first requests all fail without a response stops by itself: the server cannot be reached.
 - Connections default to the number of vCPUs, which is also their limit unless raised in the settings: each one is a
   thread.
 - A warm-up period is excluded from the statistics. Later: ramp-up stages (rate or connections changing over time).
@@ -83,6 +85,8 @@ The existing dynamic variables (`{{$randomUUID}}`, `{{$timestamp}}`...) are eval
   environment, if any).
 - Any query parameter can be varied without writing `{{...}}`: a "Vary" toggle on its row gives it a generator for
   the run only. The request itself does not change, and a normal Fetch keeps sending the original value.
+- The same for the body (done): the whole body, or the values of a JSON body selected by a JSONPath (a string stays
+  a string). Compiled once into the request template: no JSON parsing per request. Later: the fields of a form body.
 - Each row shows its source, its settings, its number of values and a few samples. A preview lists the first requests
   as they will be sent.
 - Errors appear before the run: an empty range, a zero step, a `{{name}}` without value, a missing file.

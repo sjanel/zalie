@@ -74,6 +74,15 @@ charts prepared once per snapshot, drawn at most one point per pixel
   data, the width or the zoom change, so a frame costs the same for a run of 10 seconds or of an hour.
 - **The adaptive rate decides off the hot path**: the collector gives each complete second to a `RateController`, which
   sets the interval of the rate cap that the workers read anyway when they take a send slot: nothing more per request.
+  The collector also tells how late it decides (about 0.3 s after the end of the second): the next second, which mixes
+  both rates, is judged against both after a rise. A new rate applies at once: each waiting connection holds a reserved
+  send slot, so the workers watch an epoch of the rate between their sleeps (10 ms at most) and take a new slot when it
+  changes; otherwise the old interval would hold for one interval per connection.
+- **An unreachable server ends the run**: until the first response, the workers count their failures on a shared
+  counter (a relaxed load of a flag set once per run afterwards), and stop the run after one failure per connection.
+- **Body parameters are compiled, not parsed per request**: the JSONPath of a JSON field is evaluated once on the text
+  of the body (its `{{placeholders}}` masked by numbers of the same size), the values it selects become slots of the
+  body template like the `{{variables}}`: filling a request costs the same.
 - **Closing a tab never waits for its run**: the run is stopped and released later, once its requests in flight end
   (at their next bytes, or their timeout).
 

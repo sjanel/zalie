@@ -211,7 +211,7 @@ class App {
   void drawPerfSettings(RequestTab& tab, Request& request);
   void drawPerfPlan(RequestTab& tab, const Request& request);
   void drawPerfParameters(RequestTab& tab, Request& request);
-  void drawPerfAddQuery(RequestTab& tab, Request& request);
+  void drawPerfAddRows(RequestTab& tab, Request& request);
   void drawPerfRowEditor(RequestTab& tab, Request& request);
   void drawPerfDialogs(RequestTab& tab, const Request& request);
   void drawPerfDashboard(PerfTab& perf);

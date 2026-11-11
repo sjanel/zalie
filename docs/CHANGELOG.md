@@ -49,19 +49,22 @@ First version.
 
 ### Performance tests
 
-- A Performance tab per request (Fetch button menu, or the request menu of the sidebar): sends it many times from
-  its own threads, one per connection, limited by duration, number of requests, requests per second or one pass over
-  the values, with an optional warm-up. Confirmation before loading another host than the local machine, or with a
-  method that may change data.
+- A Performance tab per request (**Performance** button next to **Fetch**, ++ctrl+shift+enter++, or the request menu
+  of the sidebar): sends it many times from its own threads, one per connection, limited by duration, number of
+  requests, requests per second or one pass over the values, with an optional warm-up. Confirmation before loading
+  another host than the local machine, or with a method that may change data. A run whose first requests all fail
+  without a response stops by itself, and tells why.
 - Parameter table: every `{{variable}}` and query parameter can vary, from a fixed value, a list, integer, decimal or
   date ranges, random strings, UUIDs, timestamps or a data file (text, CSV, JSON Lines; never loaded in memory, drop
   it on its row), in order, at random or shuffled, combined independently, together or in all combinations, with a
-  seed for reproducible runs. Query parameters can also be left out of the run or added for it only, the request
-  unchanged. Samples, value counts and the first requests are shown before the run.
+  seed for reproducible runs. Query parameters can also be left out of the run or added for it only, and the whole
+  body or the fields of a JSON body (selected by a JSONPath) can vary, the request unchanged. Samples, value counts
+  and the first requests are shown before the run.
 - Adaptive rate: between a minimum and a maximum of requests per second, the rate follows what the server sustains. It
-  rises while the response times stay close to their baseline, holds when they rise, and backs off when requests fail
-  (`5xx`, `429`, no response), when the response times explode or when their p99 exceeds an optional cap. The
-  dashboard shows its target, its state and the sustained rate.
+  rises while the response times stay close to their baseline (doubling every second, or by bisection between the
+  minimum and the maximum when there is one), holds when they rise, and backs off when requests fail (`5xx`, `429`,
+  no response), when the response times explode or when their p99 exceeds an optional cap. The dashboard shows its
+  target, its state and the sustained rate.
 - Live dashboard, with Zalie eating a big piece of meat as the run progresses: requests per second, latency
   percentiles, success and error shares, throughput; charts of the requests per second by status class, of the
   response time over time, of the latency distribution and of the latency percentiles (hover, hide a series, zoom);

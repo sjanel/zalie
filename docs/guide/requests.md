@@ -6,6 +6,7 @@
 - **URL**: absolute, or without scheme (`localhost:8080/x` means `http://localhost:8080/x`). It may contain
   `{{variables}}`: the resolved URL is shown below the bar, with the undefined variables in orange.
 - **Fetch** (++ctrl+enter++, from anywhere) sends it; **Cancel** (++esc++) while it is in flight.
+- **Performance** (++ctrl+shift+enter++) opens its [Performance tab](performance.md), to send it many times.
 - Pasting a **curl command** in the URL bar converts it into the request (see [Import](import.md)).
 
 ## Params
