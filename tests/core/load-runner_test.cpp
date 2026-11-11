@@ -157,12 +157,12 @@ LoadOptions RequestsOnly(std::uint64_t maxRequests, std::uint32_t connections) {
 }
 
 // The time series of a run, to explain a failure on a machine that only the CI has: per second, the target rate, the
-// requests and their median response time.
+// requests and their median and p90 response times.
 std::string DescribeSeries(const LoadSnapshot& snapshot) {
-  std::string text = "series (target rate / requests / p50 us):";
+  std::string text = "series (target rate / requests / p50 us / p90 us):";
   for (const LoadSecond& point : snapshot.series) {
     text += ' ' + std::to_string(point.targetRate) + '/' + std::to_string(point.requests()) + '/' +
-            std::to_string(point.p50Ns / 1000);
+            std::to_string(point.p50Ns / 1000) + '/' + std::to_string(point.p90Ns / 1000);
   }
   return text;
 }
@@ -238,7 +238,50 @@ TEST_F(LoadRunnerTest, TheRateCapHoldsAcrossTheConnections) {
   EXPECT_EQ(snapshot->series[0].targetRate, 0U);
 }
 
-TEST_F(LoadRunnerTest, TheAdaptiveRateRisesWhileHealthyAndBacksOffWhenThrottled) {
+// The first raise of an adaptive rate, and the requests per second the server received right after it.
+struct FirstRaise {
+  std::string series;  // DescribeSeries of the run
+  double rate{0.0};    // the raised rate, 0 if it did not rise in time
+  double requestsPerSecond{0.0};
+  RateState state{RateState::rampUp};
+};
+
+// The first measure of an adaptive rate has no baseline to compare its response times with: unless requests fail, it is
+// healthy and the rate rises, whatever the machine. The next ones judge the response times against that baseline, which
+// a busy machine makes noisy: on the macOS runners, a few slow responses of a fast local server look like an overload
+// and end the ramp up. The sequence of the rates is tested on synthetic measures (rate-controller_test.cpp); these
+// tests check what the runner adds, the requests follow a new rate at once. They run alone (RUN_SERIAL, see
+// tests/CMakeLists.txt): they count requests that the tests running meanwhile would slow down.
+class AdaptiveRateTest : public LoadRunnerTest {
+ protected:
+  // Waits for the first raise of the rate of 'runner' above 'startRate', then counts the requests the server receives
+  // for half a second: the next decision comes about one second after the raise, they all follow the raised rate. Stops
+  // the run.
+  FirstRaise measureFirstRaise(LoadRunner& runner, double startRate) {
+    FirstRaise raise;
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + 10s;
+    std::shared_ptr<const LoadSnapshot> snapshot = runner.snapshot();
+    while (snapshot->targetRequestsPerSecond <= startRate && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(5ms);
+      snapshot = runner.snapshot();
+    }
+    if (snapshot->targetRequestsPerSecond > startRate) {
+      raise.rate = snapshot->targetRequestsPerSecond;
+      raise.state = snapshot->rateState;
+      const std::uint64_t hitsBefore = hits();
+      const std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+      std::this_thread::sleep_for(500ms);
+      const std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - begin;
+      raise.requestsPerSecond = static_cast<double>(hits() - hitsBefore) / elapsed.count();
+    }
+    runner.stop();
+    EXPECT_TRUE(runner.waitForCompletion(10s));
+    raise.series = DescribeSeries(*runner.snapshot());
+    return raise;
+  }
+};
+
+TEST_F(AdaptiveRateTest, RisesWhileHealthyAndBacksOffWhenThrottled) {
   // 100 requests per second, doubled after a healthy measure: the server asks to slow down (429) from then on, the rate
   // backs off to 100. The second at 200 is usually the third one, but a busy machine can miss the rate of a measure
   // (client limited, measured again) or see slower responses (small steps): the run lasts until the back off. Enough
@@ -272,43 +315,34 @@ TEST_F(LoadRunnerTest, TheAdaptiveRateRisesWhileHealthyAndBacksOffWhenThrottled)
   EXPECT_GT(snapshot->baselineP50Ns, 0U);
 }
 
-// Runs until the adaptive rate aims at 'target' requests per second at least, or a deadline. Returns its final state.
-std::shared_ptr<const LoadSnapshot> RunUntilTarget(LoadRunner& runner, double target) {
-  const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + 25s;
-  while (runner.snapshot()->targetRequestsPerSecond < target && std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(20ms);
-  }
-  runner.stop();
-  EXPECT_TRUE(runner.waitForCompletion(10s));
-  return runner.snapshot();
-}
-
-TEST_F(LoadRunnerTest, ARaisedRateAppliesAtOnceWhateverTheConnections) {
-  // 16 connections at 20 requests per second each hold a send slot, 50 ms apart: if they kept them, a raised rate would
-  // wait 0.8 s for them, its seconds would look short of their target and the rate would fall back (client limited).
-  // Doubling every second: 20, 40, 80, 160, 320 within a few seconds.
+TEST_F(AdaptiveRateTest, ARaisedRateAppliesAtOnceWhateverTheConnections) {
+  // 16 connections at 20 requests per second each hold a send slot, 50 ms apart: if they kept them, the doubled rate
+  // would wait 0.8 s for them (20 per second meanwhile), its seconds would look short of their target and the rate
+  // would fall back (client limited).
   LoadRunner runner(
       makeRequest("/ok"),
       {.durationMs = 40000, .minRequestsPerSecond = 20, .connections = 16, .maxConnections = 16, .adaptiveRate = true});
-  const auto snapshot = RunUntilTarget(runner, 320.0);
-  SCOPED_TRACE(DescribeSeries(*snapshot));
-  EXPECT_GE(snapshot->targetRequestsPerSecond, 320.0);
-  EXPECT_LT(snapshot->elapsedSeconds, 20.0);
+  const FirstRaise raise = measureFirstRaise(runner, 20.0);
+  SCOPED_TRACE(raise.series);
+  EXPECT_DOUBLE_EQ(raise.rate, 40.0);
+  EXPECT_EQ(raise.state, RateState::rampUp);
+  EXPECT_GE(raise.requestsPerSecond, 0.75 * raise.rate);
 }
 
-TEST_F(LoadRunnerTest, TheAdaptiveRateBisectsUpToItsMaximum) {
-  // From 50 to 2000: 316, then 795, 1261, 1588... on a server that takes them all.
+TEST_F(AdaptiveRateTest, TheBisectionJumpsAtOnceToTheMiddleOfItsRange) {
+  // From 20 to 2000: the geometric middle, 200, ten times the first rate. The send slots of the first rate would hold
+  // 20 requests per second for 0.8 s.
   LoadRunner runner(makeRequest("/ok"), {.durationMs = 40000,
                                          .maxRequestsPerSecond = 2000,
-                                         .minRequestsPerSecond = 50,
+                                         .minRequestsPerSecond = 20,
                                          .connections = 16,
                                          .maxConnections = 16,
                                          .adaptiveRate = true});
-  const auto snapshot = RunUntilTarget(runner, 1500.0);
-  SCOPED_TRACE(DescribeSeries(*snapshot));
-  EXPECT_GE(snapshot->targetRequestsPerSecond, 1500.0);
-  EXPECT_LT(snapshot->elapsedSeconds, 20.0);
-  EXPECT_LE(snapshot->targetRequestsPerSecond, 2000.0);
+  const FirstRaise raise = measureFirstRaise(runner, 20.0);
+  SCOPED_TRACE(raise.series);
+  EXPECT_DOUBLE_EQ(raise.rate, 200.0);
+  EXPECT_EQ(raise.state, RateState::search);
+  EXPECT_GE(raise.requestsPerSecond, 0.75 * raise.rate);
 }
 
 TEST(LoadOptions, TheAdaptiveRateComesFromTheSettings) {
