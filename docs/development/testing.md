@@ -73,6 +73,20 @@ the request, redirecting, streaming slowly, or sending a large body. The executo
 client and worker threads: what is checked is the full path from a `Request` of the model to an `Exchange` read by the
 UI.
 
+The adaptive rate judges the response times against a baseline: on a busy machine (the macOS runners of the CI), a
+few slow responses of the fast local server look like an overload and the rate backs off. So its integration tests
+(`AdaptiveRateTest` in `load-runner_test.cpp`) only check decisions that do not depend on the machine (the first
+raise, the failures of a throttled server) and how fast the requests follow them; the sequence of the rates is tested
+on synthetic measures (`rate-controller_test.cpp`). They run alone, even with `ctest -j` (`SERIAL_SUITE` of
+`zalie_add_test` in `tests/CMakeLists.txt`, the ctest `RUN_SERIAL` property). To see how a test behaves on a slow
+machine, starve it of CPU on Linux:
+
+```bash
+for i in 1 2 3 4 5 6; do taskset -c 0-2 sh -c 'while :; do :; done' & done
+taskset -c 0-2 nice -n 19 ./build/tests/zalie_load-runner_test --gtest_filter='AdaptiveRateTest.*'
+kill $(jobs -p)
+```
+
 ## Sanitizers and compilers
 
 ```bash
