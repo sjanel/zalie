@@ -57,9 +57,9 @@ struct ResolvedRequest {
 [[nodiscard]] ResolvedRequest ResolveRequest(const Request& request, const Collection& collection,
                                              const VariableScope& scope);
 
-// Same, with 'url' in place of the URL of the request.
-[[nodiscard]] ResolvedRequest ResolveRequest(const Request& request, std::string_view url, const Collection& collection,
-                                             const VariableScope& scope);
+// Same, with 'url' and 'body' in place of the URL and of the text, JSON or XML body of the request.
+[[nodiscard]] ResolvedRequest ResolveRequest(const Request& request, std::string_view url, std::string_view body,
+                                             const Collection& collection, const VariableScope& scope);
 
 // Builds the variable scope of a collection: active environment (if 'environmentIndex' is valid) then collection
 // variables. The scope refers to the collection strings.

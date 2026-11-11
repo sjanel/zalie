@@ -510,11 +510,12 @@ TEST_F(ChartTest, EveryStyleAndScaleDraws) {
   const std::vector<float> counts{5, 0, 12};
   const std::array bars{ui::ChartSeries{.name = "count", .values = counts, .color = IM_COL32_WHITE}};
   ui::ChartState barsState;
-  const auto drawBars = [&](std::span<const ui::ChartMarker> markers) {
+  const auto drawBars = [&](std::span<const ui::ChartMarker> markers, std::string_view yLabel = {}) {
     windowFrame([&] {
       ui::Chart("##bars", edges, bars, barsState,
                 {.markers = markers,
                  .x = {.unit = ui::ChartUnit::nanoseconds, .scale = ui::ChartScale::log},
+                 .y = {.label = yLabel},
                  .style = ui::ChartStyle::bars});
     });
     EXPECT_EQ(LastFrameNonFiniteVertices(), 0);
@@ -528,6 +529,8 @@ TEST_F(ChartTest, EveryStyleAndScaleDraws) {
   const std::array unplaced{markers[0], ui::ChartMarker{.label = "p90", .x = 0, .color = IM_COL32_WHITE},
                             ui::ChartMarker{.label = "p99", .x = -5, .color = IM_COL32_WHITE}};
   EXPECT_EQ(drawBars(unplaced), withMarker);
+  // What the values count, above the labels of the y axis.
+  EXPECT_GT(drawBars(markers, "responses"), withMarker);
   const std::vector<float> percentiles{0, 90, 99, 99.9F};
   const std::vector<float> latencies{1e6, 2e6, 5e6, 4e7};
   const std::array curve{ui::ChartSeries{.name = "latency", .values = latencies, .color = IM_COL32_WHITE}};

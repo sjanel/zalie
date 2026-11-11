@@ -17,6 +17,7 @@
 #include "zalie/collection.hpp"
 #include "zalie/data-file.hpp"
 #include "zalie/encoding.hpp"
+#include "zalie/json-path.hpp"
 #include "zalie/key-value.hpp"
 #include "zalie/load-settings.hpp"
 #include "zalie/raw-chars.hpp"
@@ -60,6 +61,99 @@ void AppendBasicValue(std::string_view credentials, RawChars32& out) {
 }
 
 // A value bound to a sentinel while the request is resolved.
+// Bytes [begin, end) of the body as written, replaced by the values of a parameter.
+struct BodySlot {
+  std::string_view reference;
+  std::uint32_t begin;
+  std::uint32_t end;
+  std::uint32_t parameter;
+};
+
+// The body with its {{placeholders}} outside of strings turned into numbers of the same size ("0" then spaces): it
+// parses as JSON, with the same offsets.
+[[nodiscard]] RawChars32 ParsableJson(std::string_view body) {
+  RawChars32 out(body);
+  char* pData = out.data();
+  bool inString = false;
+  for (std::size_t pos = 0; pos < body.size(); ++pos) {
+    if (inString) {
+      if (body[pos] == '\\') {
+        ++pos;
+      } else if (body[pos] == '"') {
+        inString = false;
+      }
+    } else if (body[pos] == '"') {
+      inString = true;
+    } else if (body.substr(pos).starts_with("{{")) {
+      const std::size_t close = body.find("}}", pos + 2);
+      if (close == std::string_view::npos) {
+        break;
+      }
+      pData[pos] = '0';
+      std::fill(pData + pos + 1, pData + close + 2, ' ');
+      pos = close + 1;
+    }
+  }
+  return out;
+}
+
+// Where the values of a body parameter go: the whole body, or the values its JSONPath selects. Returns why they go
+// nowhere, empty when they do.
+[[nodiscard]] RawChars32 AddBodySlots(const Request& request, const LoadParameter& parameter, std::uint32_t index,
+                                      std::string_view reference, amc::vector<BodySlot>& slots) {
+  const std::string_view body = request.body;
+  if (parameter.target == ParameterTarget::body) {
+    if (request.bodyMode == BodyMode::none || request.bodyMode == BodyMode::formUrlEncoded) {
+      return RawChars32(std::string_view{"The request has no text body: choose JSON, Text or XML in its Body tab"});
+    }
+    slots.push_back(
+        {.reference = reference, .begin = 0, .end = static_cast<std::uint32_t>(body.size()), .parameter = index});
+    return {};
+  }
+  if (request.bodyMode != BodyMode::json) {
+    return RawChars32(std::string_view{"A JSON field needs a JSON body"});
+  }
+  const std::string_view path = Trim(parameter.name);
+  auto spans = JsonFieldSpans(body, path);
+  if (!spans) {
+    return std::move(spans.error());
+  }
+  for (const TextSpan& span : *spans) {
+    slots.push_back({.reference = reference, .begin = span.begin, .end = span.end, .parameter = index});
+  }
+  return {};
+}
+
+}  // namespace
+
+std::expected<amc::vector<TextSpan>, RawChars32> JsonFieldSpans(std::string_view body, std::string_view path) {
+  const RawChars32 parsable = ParsableJson(body);
+  auto result = EvaluateJsonPath(parsable, path);
+  if (!result) {
+    return std::unexpected(Concat({"JSON field '", path, "': ", result.error()}));
+  }
+  if (result->matches.empty()) {
+    return std::unexpected(Concat({"'", path, "' matches nothing in the body"}));
+  }
+  amc::vector<TextSpan> spans;
+  spans.reserve(result->matches.size());
+  for (std::string_view match : result->matches) {
+    auto begin = static_cast<std::uint32_t>(match.data() - parsable.data());
+    auto end = static_cast<std::uint32_t>(begin + match.size());
+    if (body[begin] == '"') {
+      // Inside the quotes: the value is escaped there.
+      ++begin;
+      --end;
+    } else if (body.substr(begin).starts_with("{{")) {
+      end = static_cast<std::uint32_t>(body.find("}}", begin) + 2);  // the whole placeholder
+    }
+    spans.push_back({.begin = begin, .end = end});
+  }
+  return spans;
+}
+
+namespace {
+
 struct SlotBinding {
   // Name of a dynamic variable, each occurrence of which has its own value. Empty for the variable of a parameter.
   std::string_view dynamicName;
@@ -262,27 +356,39 @@ LoadPlan::LoadPlan(const Request& request, const Collection& collection, const V
   // The parameters come first: they take precedence over the variables of the environment and of the collection.
   VariableScope runScope;
   RawChars32 url(Trim(request.url));
+  amc::vector<BodySlot> bodySlots;
   _parameterVariables.resize(settings.parameters.size(), ValueGenerators::kNoVariable);
   for (std::uint32_t idx = 0; idx < settings.parameters.size(); ++idx) {
     const LoadParameter& parameter = settings.parameters[idx];
     const std::string_view key = Trim(parameter.name);
     std::string_view name = key;
-    if (name.empty()) {
+    if (name.empty() && parameter.target != ParameterTarget::body) {
       _issues.push_back({.message = RawChars32(std::string_view{"The parameter has no name"}), .parameter = idx});
       continue;
     }
-    if (parameter.queryParameter) {
+    if (parameter.target != ParameterTarget::variable) {
       if (parameter.source == ValueSource::omitted) {
-        RemoveQueryParameter(url, key);
+        if (parameter.target == ParameterTarget::queryParameter) {
+          RemoveQueryParameter(url, key);
+        } else {
+          _issues.push_back(
+              {.message = RawChars32(std::string_view{"Only a query parameter can be left out"}), .parameter = idx});
+        }
         continue;
       }
+      // Its own variable, placed where the parameter goes.
       RawChars32 varyName;
       AppendAll(varyName, "$vary.", idx);
       name = scopeStrings.store(varyName);
       const std::string_view reference = scopeStrings.concat({"{{", name, "}}"});
-      if (!ReplaceQueryValue(url, key, reference)) {
-        // Added for the run: the request does not have it.
-        AppendQueryParameter(url, key, reference);
+      if (parameter.target == ParameterTarget::queryParameter) {
+        if (!ReplaceQueryValue(url, key, reference)) {
+          // Added for the run: the request does not have it.
+          AppendQueryParameter(url, key, reference);
+        }
+      } else if (RawChars32 error = AddBodySlots(request, parameter, idx, reference, bodySlots); !error.empty()) {
+        _issues.push_back({.message = std::move(error), .parameter = idx});
+        continue;
       }
     }
     if (parameter.source == ValueSource::fixed) {
@@ -301,6 +407,24 @@ LoadPlan::LoadPlan(const Request& request, const Collection& collection, const V
   }
   runScope.addScope(scope);
 
+  // The body of the run: the values of the body parameters replaced by their variables.
+  RawChars32 runBody;
+  std::ranges::sort(bodySlots, {}, &BodySlot::begin);
+  std::uint32_t written = 0;
+  for (const BodySlot& slot : bodySlots) {
+    if (slot.begin < written) {
+      _issues.push_back({.message = RawChars32(std::string_view{"Overlaps the values of another body parameter"}),
+                         .parameter = slot.parameter});
+      continue;
+    }
+    AppendAll(runBody, View(request.body).substr(written, slot.begin - written), slot.reference);
+    written = slot.end;
+  }
+  if (!bodySlots.empty()) {
+    runBody.append(View(request.body).substr(written));
+  }
+  const std::string_view body = bodySlots.empty() ? View(request.body) : View(runBody);
+
   // The dynamic variables are evaluated again for every request.
   const Auth& auth = request.auth.mode == AuthMode::inherit ? collection.auth : request.auth;
   amc::vector<std::string_view> dynamicNames;
@@ -310,7 +434,7 @@ LoadPlan::LoadPlan(const Request& request, const Collection& collection, const V
   if (request.bodyMode == BodyMode::formUrlEncoded) {
     CollectDynamicNames(request.form, runScope, dynamicNames);
   } else {
-    CollectDynamicNames(request.body, runScope, dynamicNames);
+    CollectDynamicNames(body, runScope, dynamicNames);
   }
   for (const RawChars32* pField : {&auth.username, &auth.password, &auth.token, &auth.apiKeyName, &auth.apiKeyValue}) {
     CollectDynamicNames(*pField, runScope, dynamicNames);
@@ -319,7 +443,7 @@ LoadPlan::LoadPlan(const Request& request, const Collection& collection, const V
     runScope.add(name, newSentinel({.dynamicName = name}));
   }
 
-  _resolved = ResolveRequest(request, url, collection, runScope);
+  _resolved = ResolveRequest(request, url, body, collection, runScope);
   for (std::string_view name : _resolved.unresolved) {
     _issues.push_back({.message = Concat({"The variable '", name, "' has no value"})});
   }

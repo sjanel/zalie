@@ -61,6 +61,9 @@ struct ChartMarker {
 struct ChartAxis {
   ChartUnit unit{ChartUnit::count};
   ChartScale scale{ChartScale::linear};
+  // What the values count, when neither their unit nor the title says it ("responses"). Y axis only: shown above its
+  // labels.
+  std::string_view label;
 };
 
 struct ChartOptions {

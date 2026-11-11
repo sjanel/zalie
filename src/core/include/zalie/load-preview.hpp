@@ -17,22 +17,24 @@ namespace zalie {
 struct Collection;
 struct Request;
 
-// A row of the parameter table of a run: a {{variable}} of the request or one of its query parameters, with its saved
-// parameter when it has one.
+// A row of the parameter table of a run: a {{variable}} of the request, one of its query parameters, its body or a
+// field of its JSON body, with its saved parameter when it has one.
 struct LoadRow {
   static constexpr std::uint32_t kNoParameter = LoadPlanIssue::kNoParameter;
 
   RawChars32 name;
-  // What the request sends without a saved parameter: the value of the variable, or the one of the query parameter.
+  // What the request sends without a saved parameter: the value of the variable or of the query parameter, the
+  // beginning of the body, the first value of the JSON field (inside its quotes for a string).
   RawChars32 defaultValue;
   // Its parameter in the run settings, or kNoParameter.
   std::uint32_t parameter{kNoParameter};
-  bool queryParameter{false};
+  ParameterTarget target{ParameterTarget::variable};
   // A variable defined nowhere: without a saved parameter, the run cannot start.
   bool undefined{false};
   // A saved {{variable}} parameter that the request does not use any more.
   bool unused{false};
-  // A query parameter of the run settings that the request does not have: appended to the URL of the run.
+  // A parameter of the run settings that the request does not have: a query parameter appended to the URL of the run,
+  // the body or a JSON field. Its cross removes it.
   bool added{false};
 
   using trivially_relocatable = AllTriviallyRelocatable<RawChars32>;
@@ -40,7 +42,8 @@ struct LoadRow {
 
 // Fills 'rows' with the parameter table of a request: its {{variables}} in order of appearance (with those referenced
 // by the values of other variables, dynamic ones excepted), its query parameters whose key and value have no
-// {{variable}}, then the saved parameters matching none of them (query parameters added for the run, unused ones).
+// {{variable}}, then the saved parameters matching none of them (query parameters added for the run, the body and JSON
+// fields, unused ones).
 void ListLoadRows(const Request& request, const Collection& collection, const VariableScope& scope,
                   amc::vector<LoadRow>& rows);
 

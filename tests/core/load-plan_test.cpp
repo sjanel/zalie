@@ -17,6 +17,7 @@
 #include "zalie/key-value.hpp"
 #include "zalie/load-runner.hpp"
 #include "zalie/load-settings.hpp"
+#include "zalie/method.hpp"
 #include "zalie/raw-chars.hpp"
 #include "zalie/request.hpp"
 #include "zalie/resolved-request.hpp"
@@ -286,7 +287,7 @@ TEST_F(LoadPlanTest, CollectionAuthenticationIsInherited) {
 TEST_F(LoadPlanTest, AVariedQueryParameterIsARunOnlyOverride) {
   _request.url.assign(std::string_view{"http://example.com/items?a=1&q=old&b=2#top"});
   LoadParameter parameter = ListParameter("q", "new value\nother");
-  parameter.queryParameter = true;
+  parameter.target = ParameterTarget::queryParameter;
   _settings.parameters.push_back(std::move(parameter));
   EXPECT_EQ(filled(0).url, "http://example.com/items?a=1&q=new%20value&b=2#top");
   EXPECT_EQ(filled(1).url, "http://example.com/items?a=1&q=other&b=2#top");
@@ -296,14 +297,14 @@ TEST_F(LoadPlanTest, AVariedQueryParameterIsARunOnlyOverride) {
 TEST_F(LoadPlanTest, VaryingAParameterWithoutValue) {
   _request.url.assign(std::string_view{"http://example.com/items?flag&x=1"});
   LoadParameter parameter = ListParameter("flag", "on");
-  parameter.queryParameter = true;
+  parameter.target = ParameterTarget::queryParameter;
   _settings.parameters.push_back(std::move(parameter));
   EXPECT_EQ(filled().url, "http://example.com/items?flag=on&x=1");
 }
 
 TEST_F(LoadPlanTest, AQueryParameterTheRequestDoesNotHaveIsAppendedForTheRun) {
   LoadParameter added = ListParameter("new key", "1\n2");
-  added.queryParameter = true;
+  added.target = ParameterTarget::queryParameter;
   _settings.parameters.push_back(std::move(added));
   EXPECT_EQ(filled(0).url, "http://example.com/items?new%20key=1");
   EXPECT_EQ(filled(1).url, "http://example.com/items?new%20key=2");
@@ -318,7 +319,7 @@ TEST_F(LoadPlanTest, AQueryParameterTheRequestDoesNotHaveIsAppendedForTheRun) {
   // A fixed value, inlined like the value of a variable.
   _settings.parameters.clear();
   LoadParameter fixed = FixedParameter("lang", "en");
-  fixed.queryParameter = true;
+  fixed.target = ParameterTarget::queryParameter;
   _settings.parameters.push_back(std::move(fixed));
   EXPECT_EQ(filled().url, "http://example.com/items?lang=en");
 }
@@ -327,7 +328,7 @@ TEST_F(LoadPlanTest, AnOmittedQueryParameterIsLeftOutOfTheRun) {
   _request.url.assign(std::string_view{"http://example.com/items?a=1&q=x&b=2&q=y#top"});
   LoadParameter omitted;
   omitted.name.assign(std::string_view{"q"});
-  omitted.queryParameter = true;
+  omitted.target = ParameterTarget::queryParameter;
   omitted.source = ValueSource::omitted;
   _settings.parameters.push_back(omitted);
   EXPECT_EQ(filled().url, "http://example.com/items?a=1&b=2#top");
@@ -353,6 +354,95 @@ TEST_F(LoadPlanTest, OnlyAQueryParameterCanBeOmitted) {
   ASSERT_FALSE(plan.valid());
   EXPECT_EQ(plan.issues()[0].parameter, 0U);
   EXPECT_EQ(View(plan.issues()[0].message), "Only a query parameter can be left out");
+}
+
+// A parameter of the body: the whole body, or the JSON field 'path'.
+LoadParameter BodyParameter(ParameterTarget target, std::string_view path, std::string_view values) {
+  LoadParameter parameter = ListParameter(path, values);
+  parameter.target = target;
+  return parameter;
+}
+
+TEST_F(LoadPlanTest, TheWholeBodyVariesForTheRunOnly) {
+  _request.method = Method::post;
+  setBody(BodyMode::text, "hello");
+  _settings.parameters.push_back(BodyParameter(ParameterTarget::body, "", "hello\nworld\n{\"a\": 1}"));
+  EXPECT_EQ(View(filled(0).body), "hello");
+  EXPECT_EQ(View(filled(1).body), "world");
+  EXPECT_EQ(View(filled(2).body), "{\"a\": 1}");  // raw, whatever the body mode
+  EXPECT_EQ(View(_request.body), "hello");
+  setBody(BodyMode::json, "{}");
+  EXPECT_EQ(View(filled(2).body), "{\"a\": 1}");
+  EXPECT_EQ(filled(2).headerValue("content-type"), "application/json");
+}
+
+TEST_F(LoadPlanTest, AJsonFieldKeepsItsType) {
+  _request.method = Method::post;
+  setBody(BodyMode::json, R"({"user": {"name": "ann", "id": 7}, "page": {{page}}, "tags": ["a", "b"]})");
+  addVariable("page", "1");
+  _settings.parameters.push_back(BodyParameter(ParameterTarget::jsonField, "$.user.name", "say \"hi\"\nbob"));
+  _settings.parameters.push_back(BodyParameter(ParameterTarget::jsonField, "user.id", "10\n11"));
+  _settings.parameters.push_back(BodyParameter(ParameterTarget::jsonField, "tags[*]", "x"));
+  // A string stays a string, escaped; another value is written as it is.
+  EXPECT_EQ(View(filled(0).body), R"({"user": {"name": "say \"hi\"", "id": 10}, "page": 1, "tags": ["x", "x"]})");
+  EXPECT_EQ(View(filled(1).body), R"({"user": {"name": "bob", "id": 11}, "page": 1, "tags": ["x", "x"]})");
+  // A {{placeholder}} in place of a value is a value too.
+  _settings.parameters.push_back(BodyParameter(ParameterTarget::jsonField, "$.page", "5"));
+  EXPECT_EQ(View(filled(1).body), R"({"user": {"name": "bob", "id": 11}, "page": 5, "tags": ["x", "x"]})");
+}
+
+TEST_F(LoadPlanTest, JsonFieldSpansAreTheValuesTheRunReplaces) {
+  const std::string_view body = R"({"q": "a\"b", "n": -1.5, "p": {{page}}, "o": {"k": [1]}})";
+  const auto spans = JsonFieldSpans(body, "$.*");
+  ASSERT_TRUE(spans.has_value());
+  ASSERT_EQ(spans->size(), 4U);
+  const auto text = [&](std::uint32_t idx) {
+    return body.substr((*spans)[idx].begin, (*spans)[idx].end - (*spans)[idx].begin);
+  };
+  EXPECT_EQ(text(0), R"(a\"b)");  // inside the quotes
+  EXPECT_EQ(text(1), "-1.5");
+  EXPECT_EQ(text(2), "{{page}}");
+  EXPECT_EQ(text(3), R"({"k": [1]})");
+  EXPECT_EQ(View(JsonFieldSpans(body, "$.missing").error()), "'$.missing' matches nothing in the body");
+  EXPECT_EQ(View(JsonFieldSpans(body, "$.a[").error()), "JSON field '$.a[': missing ']' (at position 5)");
+  EXPECT_EQ(View(JsonFieldSpans("{\"a\": ", "$.a").error()), "JSON field '$.a': not a valid JSON document");
+}
+
+TEST_F(LoadPlanTest, BodyParametersNeedABodyTheyCanReach) {
+  const auto firstIssue = [&] {
+    const LoadPlan plan = compile();
+    EXPECT_FALSE(plan.valid());
+    EXPECT_EQ(plan.issues()[0].parameter, 0U);
+    return std::string(View(plan.issues()[0].message));
+  };
+  _settings.parameters.push_back(BodyParameter(ParameterTarget::body, "", "x"));
+  EXPECT_EQ(firstIssue(), "The request has no text body: choose JSON, Text or XML in its Body tab");
+  _request.bodyMode = BodyMode::formUrlEncoded;
+  EXPECT_EQ(firstIssue(), "The request has no text body: choose JSON, Text or XML in its Body tab");
+  _settings.parameters[0] = BodyParameter(ParameterTarget::jsonField, "$.a", "x");
+  setBody(BodyMode::text, R"({"a": 1})");
+  EXPECT_EQ(firstIssue(), "A JSON field needs a JSON body");
+  setBody(BodyMode::json, R"({"a": 1})");
+  _settings.parameters[0].name.assign(std::string_view{"$.b"});
+  EXPECT_EQ(firstIssue(), "'$.b' matches nothing in the body");
+  _settings.parameters[0].name.clear();
+  EXPECT_EQ(firstIssue(), "The parameter has no name");
+  _settings.parameters[0].name.assign(std::string_view{"$.a"});
+  _settings.parameters[0].source = ValueSource::omitted;
+  EXPECT_EQ(firstIssue(), "Only a query parameter can be left out");
+}
+
+TEST_F(LoadPlanTest, BodyParametersCannotOverlap) {
+  setBody(BodyMode::json, R"({"a": {"b": 1}})");
+  _settings.parameters.push_back(BodyParameter(ParameterTarget::jsonField, "$.a", "{}"));
+  _settings.parameters.push_back(BodyParameter(ParameterTarget::jsonField, "$.a.b", "2"));
+  const LoadPlan plan = compile();
+  ASSERT_FALSE(plan.valid());
+  EXPECT_EQ(plan.issues()[0].parameter, 1U);
+  EXPECT_EQ(View(plan.issues()[0].message), "Overlaps the values of another body parameter");
+  // The whole body overlaps any field.
+  _settings.parameters[1] = BodyParameter(ParameterTarget::body, "", "x");
+  EXPECT_FALSE(compile().valid());
 }
 
 TEST_F(LoadPlanTest, AFixedParameterBehavesLikeAVariableOfANormalFetch) {

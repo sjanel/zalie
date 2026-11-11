@@ -103,7 +103,8 @@ class PerfPanelTest : public AppTest {
     const std::string_view name = loadRow.name;
     const float nameEnd = pRow->visible.Min.x + ImGui::GetStyle().ItemSpacing.x +
                           ImGui::CalcTextSize(name.data(), name.data() + name.size()).x;
-    MouseMove(ImVec2(nameEnd + (loadRow.queryParameter ? 20.0F : -6.0F), pRow->visible.GetCenter().y));
+    MouseMove(ImVec2(nameEnd + (loadRow.target == ParameterTarget::queryParameter ? 20.0F : -6.0F),
+                     pRow->visible.GetCenter().y));
     frame();
     waitTooltip();
     return tooltipShown();
@@ -173,7 +174,7 @@ TEST_F(PerfPanelTest, ARowTakesASourceAndItsEditorFollows) {
   ASSERT_EQ(request.load->parameters.size(), 1U);
   const LoadParameter& page = request.load->parameters[0];
   EXPECT_EQ(page.source, ValueSource::integerRange);
-  EXPECT_TRUE(page.queryParameter);
+  EXPECT_EQ(page.target, ParameterTarget::queryParameter);
   EXPECT_EQ(View(page.fixedValue), "3");
   ASSERT_TRUE(edit("##value", "2", 2));  // From, To, Step
   EXPECT_EQ(page.integerStep, 2);
@@ -296,6 +297,62 @@ TEST_F(PerfPanelTest, AQueryParameterIsAddedForTheRunThenRemoved) {
   frame(2);
   EXPECT_TRUE(request.load->parameters.empty());
   EXPECT_EQ(tab.perf->rows.size(), 1U);
+}
+
+TEST_F(PerfPanelTest, TheBodyAndItsJsonFieldsVaryForTheRunOnly) {
+  ui::RequestTab& tab = openPerf("http://127.0.0.1:1/uppercase", Method::post);
+  Request& request = *app->requestOf(tab);
+  EXPECT_FALSE(hasItem("##addBody"));  // no body
+  request.bodyMode = BodyMode::json;
+  request.body.assign(std::string_view{R"({"text": "hello", "n": 1})"});
+  replan(tab);
+  EXPECT_TRUE(hasTooltip("##addJsonField"));
+  ASSERT_TRUE(click("##addJsonField"));
+  frame(2);
+  ASSERT_TRUE(request.load.has_value());
+  ASSERT_EQ(request.load->parameters.size(), 1U);
+  EXPECT_EQ(request.load->parameters[0].target, ParameterTarget::jsonField);
+  // Its JSONPath field has the keyboard.
+  typeText("$.text");
+  press(ImGuiKey_Enter);
+  ASSERT_TRUE(waitPlan(tab));
+  frame(2);
+  EXPECT_EQ(View(request.load->parameters[0].name), "$.text");
+  ASSERT_TRUE(tab.perf->preview->plan->valid());
+  ASSERT_FALSE(tab.perf->preview->requests.empty());
+  EXPECT_EQ(View(tab.perf->preview->requests[0].body), R"({"text": "", "n": 1})");  // a fixed empty value first
+
+  // The whole body: its one line is the first value of a list. It overlaps the field.
+  EXPECT_TRUE(hasTooltip("##addBody"));
+  ASSERT_TRUE(click("##addBody"));
+  ASSERT_TRUE(waitPlan(tab));
+  frame(2);
+  ASSERT_EQ(request.load->parameters.size(), 2U);
+  EXPECT_EQ(request.load->parameters[1].target, ParameterTarget::body);
+  EXPECT_EQ(request.load->parameters[1].source, ValueSource::list);
+  EXPECT_EQ(View(request.load->parameters[1].listValues), View(request.body));
+  EXPECT_FALSE(tab.perf->preview->plan->valid());
+  EXPECT_FALSE(hasItem("##addBody"));  // one whole body at most
+
+  // The crosses remove them: the field first.
+  ASSERT_TRUE(click("##remove", 0));
+  ASSERT_TRUE(waitPlan(tab));
+  frame(2);
+  ASSERT_EQ(request.load->parameters.size(), 1U);
+  ASSERT_TRUE(tab.perf->preview->plan->valid());
+  EXPECT_EQ(View(tab.perf->preview->requests[0].body), View(request.body));
+  ASSERT_TRUE(click("##remove", 0));
+  ASSERT_TRUE(waitPlan(tab));
+  frame(2);
+  EXPECT_TRUE(request.load->parameters.empty());
+  EXPECT_TRUE(tab.perf->rows.empty());
+  EXPECT_EQ(View(request.body), R"({"text": "hello", "n": 1})");  // the request never changed
+
+  // A text body has no JSON field.
+  request.bodyMode = BodyMode::text;
+  replan(tab);
+  EXPECT_TRUE(hasItem("##addBody"));
+  EXPECT_FALSE(hasItem("##addJsonField"));
 }
 
 TEST_F(PerfPanelTest, AQueryParameterIsAddedToARequestWithoutParameters) {
@@ -463,6 +520,18 @@ TEST_F(PerfPanelTest, TheHeaderRunsStopsAndExportsARun) {
   EXPECT_TRUE(std::filesystem::exists(report));
 }
 
+TEST_F(PerfPanelTest, ARunWithoutAnyResponseStopsAndSaysWhy) {
+  ui::RequestTab& tab = openPerf("http://127.0.0.1:1/x");  // nothing listens there
+  app->requestOf(tab)->load.emplace().durationMs = 25000;
+  app->requestOf(tab)->load->connections = 2;
+  replan(tab);
+  ASSERT_TRUE(click("##perfRun"));
+  ASSERT_TRUE(waitRun(tab));
+  EXPECT_EQ(lastToast(), "No response from the server after 3 requests: connection failed");
+  EXPECT_LT(tab.perf->snapshot->elapsedSeconds, 20.0);
+  EXPECT_EQ(LastFrameNonFiniteVertices(), 0);
+}
+
 TEST_F(PerfPanelTest, TheAdaptiveRateShowsItsFieldsOnceChosen) {
   ui::RequestTab& tab = openPerf("http://127.0.0.1:1/x");
   const Request& request = *app->requestOf(tab);
@@ -488,7 +557,7 @@ TEST_F(PerfPanelTest, TheAdaptiveRateShowsItsFieldsOnceChosen) {
 
 TEST_F(PerfPanelTest, TheDashboardDrawsTheTargetOfAnAdaptiveRate) {
   ui::RequestTab& tab = openPerf("http://127.0.0.1:1/x");
-  const auto show = [&](bool adaptive) {
+  const auto show = [&](bool adaptive, bool searching = false) {
     auto snapshot = std::make_shared<LoadSnapshot>();
     snapshot->phase = LoadPhase::running;
     snapshot->connections = 4;
@@ -505,6 +574,11 @@ TEST_F(PerfPanelTest, TheDashboardDrawsTheTargetOfAnAdaptiveRate) {
       snapshot->baselineP50Ns = 1'000'000;
       snapshot->rateState = RateState::backOff;
     }
+    if (searching) {
+      snapshot->rateState = RateState::search;
+      snapshot->searchLowRequestsPerSecond = 400.0;
+      snapshot->searchHighRequestsPerSecond = 10'000.0;
+    }
     app->showLoadSnapshot(tab, snapshot);
     frame(2);
     EXPECT_EQ(LastFrameNonFiniteVertices(), 0);
@@ -512,7 +586,8 @@ TEST_F(PerfPanelTest, TheDashboardDrawsTheTargetOfAnAdaptiveRate) {
   };
   const int fixed = show(false);
   const int adaptive = show(true);
-  EXPECT_GT(adaptive, fixed);  // the target line, its legend and the state of the rate
+  EXPECT_GT(adaptive, fixed);             // the target line, its legend and the state of the rate
+  EXPECT_GT(show(true, true), adaptive);  // the bounds of the bisection
   const ui::PerfCharts& charts = tab.perf->charts;
   ASSERT_EQ(charts.rates.size(), (kNbLoadClasses + 1) * 6U);
   EXPECT_FLOAT_EQ(charts.rates[(kNbLoadClasses * 6U) + 5], 800.0F);

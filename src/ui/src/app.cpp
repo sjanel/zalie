@@ -457,6 +457,10 @@ void App::handleShortcuts() {
       ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_KeypadEnter, kGlobal)) {
     sendActiveTab();
   }
+  if (!_tabs.empty() && (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Enter, kGlobal) ||
+                         ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_KeypadEnter, kGlobal))) {
+    openPerformanceTab(_activeTab);
+  }
   if (ImGui::Shortcut(ImGuiKey_Escape, ImGuiInputFlags_RouteGlobal)) {
     cancelActiveTab();
   }

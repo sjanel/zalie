@@ -1,6 +1,9 @@
 #include "zalie/rate-controller.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 #include "zalie/latency-histogram.hpp"
@@ -39,10 +42,24 @@ RateController::RateController(std::uint32_t minRate, std::uint32_t maxRate, std
     : _minRate(StartRate(minRate, maxRate)),
       _maxRate(maxRate != 0 ? std::min(static_cast<double>(maxRate), kHighestRate) : kHighestRate),
       _rate(_minRate),
-      _maxP99Ns(maxP99Ns) {}
+      _maxP99Ns(maxP99Ns) {
+  if (maxRate != 0) {
+    // A known range: bisected rather than climbed, unless it is too narrow for that.
+    _rampingUp = false;
+    if (_maxRate > _minRate * kSearchPrecision) {
+      _searchLow = _minRate;
+      _searchHigh = _maxRate;
+      _state = RateState::search;
+    } else {
+      _state = RateState::probe;
+    }
+  }
+}
 
-bool RateController::onSecond(const LatencyHistogram& latency, std::uint64_t requests,
-                              std::uint64_t failures) noexcept {
+bool RateController::onSecond(const LatencyHistogram& latency, std::uint64_t requests, std::uint64_t failures,
+                              double lateSeconds) noexcept {
+  const double planned = _nextPlanned > 0.0 ? _nextPlanned : _rate;
+  _nextPlanned = 0.0;
   if (_settling) {
     _settling = false;
     return false;
@@ -50,14 +67,16 @@ bool RateController::onSecond(const LatencyHistogram& latency, std::uint64_t req
   _window.merge(latency);
   _windowRequests += requests;
   _windowFailures += failures;
+  _windowPlanned += planned;
   ++_windowSeconds;
   if (_windowRequests < kMinWindowRequests && _windowSeconds < kMaxWindowSeconds) {
     return false;
   }
-  const bool changed = evaluate();
+  const bool changed = evaluate(std::clamp(lateSeconds, 0.0, 1.0));
   _window = LatencyHistogram{};
   _windowRequests = 0;
   _windowFailures = 0;
+  _windowPlanned = 0.0;
   _windowSeconds = 0;
   return changed;
 }
@@ -95,22 +114,26 @@ RateController::Verdict RateController::judge() const noexcept {
   return Verdict::healthy;
 }
 
-bool RateController::evaluate() noexcept {
-  switch (judge()) {
-    case Verdict::failing:
-      _rampingUp = false;
-      _state = RateState::backOff;
-      return setRate(_rate * kFastBackOffFactor);
-    case Verdict::overloaded:
-      _rampingUp = false;
-      _state = RateState::backOff;
-      return setRate(_rate * kSlowBackOffFactor);
-    case Verdict::slower:
-      _rampingUp = false;
-      _state = RateState::hold;
-      return false;
-    case Verdict::healthy:
-      break;
+bool RateController::evaluate(double lateSeconds) noexcept {
+  const Verdict verdict = judge();
+  if (verdict != Verdict::healthy) {
+    // Indexed by Verdict.
+    static constexpr std::array kStates{RateState::probe, RateState::hold, RateState::backOff, RateState::failing};
+    static constexpr std::array kFactors{1.0, 1.0, kSlowBackOffFactor, kFastBackOffFactor};
+    _rampingUp = false;
+    _state = kStates[static_cast<std::size_t>(verdict)];
+    if (_searchHigh > 0.0) {
+      // Too high for the server: the new upper bound of the bisection.
+      const double low = _searchLow;
+      _searchHigh = _rate;
+      if (_searchHigh > low * kSearchPrecision) {
+        _state = RateState::search;
+        return setRate(std::sqrt(low * _searchHigh), lateSeconds);
+      }
+      endSearch();
+      return setRate(low, lateSeconds);
+    }
+    return setRate(_rate * kFactors[static_cast<std::size_t>(verdict)], lateSeconds);
   }
   const std::uint64_t p50Ns = _window.percentileNs(50.0);
   const std::uint64_t p90Ns = _window.percentileNs(90.0);
@@ -120,28 +143,44 @@ bool RateController::evaluate() noexcept {
   _healthyFailures += _windowFailures;
   const double reached = static_cast<double>(_windowRequests) / static_cast<double>(_windowSeconds);
   _sustainedRate = std::max(_sustainedRate, reached);
-  if (reached < kClientLimitedShare * _rate) {
+  const double reachedShare = static_cast<double>(_windowRequests) / _windowPlanned;
+  if (reachedShare < kClientLimitedShare) {
+    endSearch();  // the connections cannot go higher
     _state = RateState::clientLimited;
-    return setRate(reached * kClientLimitedMargin);
+    return setRate(reached * kClientLimitedMargin, lateSeconds);
   }
-  if (reached < kReachedShare * _rate) {
+  if (reachedShare < kReachedShare) {
     return false;
+  }
+  if (_searchHigh > 0.0) {
+    // Healthy: the new lower bound of the bisection.
+    _searchLow = _rate;
+    if (_searchHigh > _searchLow * kSearchPrecision) {
+      _state = RateState::search;
+      return setRate(std::sqrt(_searchLow * _searchHigh), lateSeconds);
+    }
+    endSearch();  // probing goes on from here
   }
   if (_rate >= _maxRate) {
     _state = RateState::ceiling;
     return false;
   }
   _state = _rampingUp ? RateState::rampUp : RateState::probe;
-  return setRate(_rampingUp ? _rate * kRampUpFactor : std::max(_rate * kProbeFactor, _rate + 1.0));
+  return setRate(_rampingUp ? _rate * kRampUpFactor : std::max(_rate * kProbeFactor, _rate + 1.0), lateSeconds);
 }
 
-bool RateController::setRate(double rate) noexcept {
+bool RateController::setRate(double rate, double lateSeconds) noexcept {
   const double clamped = std::clamp(rate, _minRate, _maxRate);
   if (clamped == _rate) {
     return false;
   }
+  if (clamped < _rate) {
+    _settling = true;  // the next second would still show the load of the higher rate
+  } else {
+    // The next second starts at the previous rate: judged against both.
+    _nextPlanned = (_rate * lateSeconds) + (clamped * (1.0 - lateSeconds));
+  }
   _rate = clamped;
-  _settling = true;
   return true;
 }
 

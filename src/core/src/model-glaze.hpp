@@ -84,6 +84,14 @@ struct meta<zalie::ValueSource> {
 };
 
 template <>
+struct meta<zalie::ParameterTarget> {
+  using enum zalie::ParameterTarget;
+  static constexpr std::array keys{std::string_view{"variable"}, std::string_view{"query-parameter"},
+                                   std::string_view{"body"}, std::string_view{"json-field"}};
+  static constexpr std::array value{variable, queryParameter, body, jsonField};
+};
+
+template <>
 struct meta<zalie::ValueOrder> {
   using enum zalie::ValueOrder;
   static constexpr std::array keys{std::string_view{"in-order"}, std::string_view{"random"},

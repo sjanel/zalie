@@ -342,8 +342,15 @@ void Chart(const char* strId, std::span<const float> x, std::span<const ChartSer
     legendX -= 12.0F * scale;
   }
 
+  // What the values of the y axis count, above its labels: the top label is centered on the top of the plot.
+  float plotTop = origin.y + lineHeight + pad;
+  if (!options.y.label.empty()) {
+    pDrawList->AddText(ImVec2(origin.x, plotTop - (pad * 0.5F)), pal.textDim, options.y.label.data(),
+                       options.y.label.data() + options.y.label.size());
+    plotTop += lineHeight * 1.5F;
+  }
+
   // The points of the window shown, prepared again only when the data, the width or the zoom change.
-  const float plotTop = origin.y + lineHeight + pad;
   const float plotBottom = origin.y + height - lineHeight - pad;
   float plotLeft = origin.x;
   const float plotRight = origin.x + width - pad;

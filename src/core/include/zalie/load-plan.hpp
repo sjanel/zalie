@@ -69,6 +69,18 @@ class TextTemplate {
   amc::vector<TemplatePart> _parts;
 };
 
+// Bytes [begin, end) of a text.
+struct TextSpan {
+  std::uint32_t begin{0};
+  std::uint32_t end{0};
+};
+
+// Where a run puts the values of a JSON field parameter: the values that 'path' (a JSONPath) selects in 'body', inside
+// their quotes for a string, whole for another value. A {{placeholder}} outside of a string ({"page": {{page}}}) counts
+// as a value. Fails on an invalid path or body, or when nothing matches.
+[[nodiscard]] std::expected<amc::vector<TextSpan>, RawChars32> JsonFieldSpans(std::string_view body,
+                                                                              std::string_view path);
+
 // A header sent by a run.
 struct LoadHeader {
   using trivially_relocatable = AllTriviallyRelocatable<TextTemplate>;

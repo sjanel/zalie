@@ -288,7 +288,7 @@ void SetupPerformanceDemo(ui::App& app, Request& request) {
   settings.parameters.push_back(std::move(terms));
   LoadParameter pages;
   pages.name.assign(std::string_view{"page"});
-  pages.queryParameter = true;
+  pages.target = ParameterTarget::queryParameter;
   pages.source = ValueSource::integerRange;
   pages.integerFrom = 1;
   pages.integerTo = 50;

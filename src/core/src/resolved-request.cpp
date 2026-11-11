@@ -178,11 +178,11 @@ VariableScope MakeScope(const Collection& collection, int environmentIndex) {
 }
 
 ResolvedRequest ResolveRequest(const Request& request, const Collection& collection, const VariableScope& scope) {
-  return ResolveRequest(request, request.url, collection, scope);
+  return ResolveRequest(request, request.url, request.body, collection, scope);
 }
 
-ResolvedRequest ResolveRequest(const Request& request, std::string_view url, const Collection& collection,
-                               const VariableScope& scope) {
+ResolvedRequest ResolveRequest(const Request& request, std::string_view url, std::string_view body,
+                               const Collection& collection, const VariableScope& scope) {
   ResolvedRequest out(EstimateStringsSize(request, collection));
   out.method = request.method;
   out.settings = request.settings;
@@ -205,8 +205,8 @@ ResolvedRequest ResolveRequest(const Request& request, std::string_view url, con
     case BodyMode::json:
     case BodyMode::text:
     case BodyMode::xml:
-      out.body.reserve(request.body.size());
-      resolver.resolveInto(request.body, out.body);
+      out.body.reserve(body.size());
+      resolver.resolveInto(body, out.body);
       break;
     case BodyMode::formUrlEncoded: {
       RawChars32& field = resolver.scratch();

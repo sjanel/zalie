@@ -5,6 +5,7 @@ On macOS, ++ctrl++ is ++cmd++.
 | Shortcut | Action |
 | -------- | ------ |
 | ++ctrl+enter++ | Fetch: send the active request (from anywhere, even while typing). In a Performance tab: run |
+| ++ctrl+shift+enter++ | Open the Performance tab of the active request |
 | ++esc++ | Cancel the request in flight. In a Performance tab: stop the run |
 | ++ctrl+t++ | New unsaved request |
 | ++ctrl+w++ | Close the tab |

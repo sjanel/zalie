@@ -67,10 +67,12 @@ constexpr std::array<const char*, 3> kTimestampNames{"Unix seconds", "Unix milli
 constexpr std::array<const char*, 3> kFileFormatNames{"Text, one value per line", "CSV with a header", "JSON Lines"};
 constexpr std::array<const char*, PerfCharts::kNbLatencySeries> kLatencyNames{"p50", "p90", "p99", "max"};
 // Indexed by RateState.
-constexpr std::array<std::string_view, 6> kRateStates{"ramping up",
+constexpr std::array<std::string_view, 8> kRateStates{"ramping up, doubling every second",
+                                                      "searching by bisection",
                                                       "probing by small steps",
                                                       "holding, the response times rise",
                                                       "backing off, the server is overloaded",
+                                                      "backing off, requests fail",
                                                       "limited by the connections, more of them would go faster",
                                                       "at its maximum"};
 
@@ -198,8 +200,8 @@ LoadParameter& MaterializeParameter(Request& request, LoadRow& row) {
   if (row.parameter == LoadRow::kNoParameter) {
     LoadParameter parameter;
     parameter.name = row.name;
-    parameter.queryParameter = row.queryParameter;
-    if (row.queryParameter) {
+    parameter.target = row.target;
+    if (row.target == ParameterTarget::queryParameter) {
       parameter.fixedValue = row.defaultValue;
       parameter.listValues = row.defaultValue;
     }
@@ -390,6 +392,9 @@ void App::pollRuns() {
       perf.runner.reset();  // its threads are over
       if (!perf.snapshot->setupError.empty()) {
         toast(Concat({"The run could not start: ", perf.snapshot->setupError}), true);
+      }
+      if (!perf.snapshot->stopReason.empty()) {
+        toast(perf.snapshot->stopReason, true);
       }
     }
   }
@@ -852,12 +857,12 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
   ImGui::Spacing();
   SectionTitle("PARAMETERS");
   if (perf.rows.empty()) {
-    TextDim("No {{variable}} nor query parameter to vary: every request is the same.");
+    TextDim("No {{variable}}, query parameter or body to vary: every request is the same.");
     if (!perf.droppedPath.empty()) {
       importPath(PathFromUtf8(perf.droppedPath));
       perf.droppedPath.clear();
     }
-    drawPerfAddQuery(tab, request);
+    drawPerfAddRows(tab, request);
     return;
   }
   const LoadPreview* pPreview = perf.preview.get();
@@ -902,23 +907,31 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
       }
       ImGui::SameLine();
       const bool omitted = pParameter != nullptr && pParameter->source == ValueSource::omitted;
-      if (row.added && pParameter != nullptr) {
-        // Added for the run: its key is edited here.
+      if (row.target == ParameterTarget::body) {
+        ImGui::AlignTextToFramePadding();
+        TextColored(hasIssue ? pal.warning : pal.text, "Body");
+        ImGui::SameLine(0, 4.0F * scale);
+        TextDim("(whole)");
+      } else if (row.added && pParameter != nullptr) {
+        // Added for the run: its query key or its JSONPath is edited here.
+        const bool jsonField = row.target == ParameterTarget::jsonField;
+        const std::string_view tag = jsonField ? std::string_view{"(JSON)"} : std::string_view{"(added)"};
         if (hasIssue) {
           ImGui::PushStyleColor(ImGuiCol_Text, pal.warning);
         }
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("(added)").x - (4.0F * scale));
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x -
+                                ImGui::CalcTextSize(tag.data(), tag.data() + tag.size()).x - (4.0F * scale));
         if (perf.focusAddedName && idx == perf.selectedRow) {
           ImGui::SetKeyboardFocusHere();
           perf.focusAddedName = false;
         }
-        edited |= InputText("##name", pParameter->name, 0, "key");
+        edited |= InputText("##name", pParameter->name, 0, jsonField ? "$.path" : "key");
         if (hasIssue) {
           ImGui::PopStyleColor();
         }
         ImGui::SameLine(0, 4.0F * scale);
         ImGui::AlignTextToFramePadding();
-        TextDim("(added)");
+        TextDim(tag);
       } else {
         ImGui::AlignTextToFramePadding();
         ImU32 nameColor = pal.text;
@@ -928,7 +941,7 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
           nameColor = pal.warning;
         }
         TextColored(nameColor, row.name);
-        if (row.queryParameter) {
+        if (row.target == ParameterTarget::queryParameter) {
           ImGui::SameLine(0, 4.0F * scale);
           TextDim("(query)");
         }
@@ -937,11 +950,17 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
         const char* help = "A {{variable}} of the request";
         if (row.unused) {
           help = "Not used by the request any more: choose Default to remove it";
+        } else if (row.target == ParameterTarget::body) {
+          help = "The whole body of the request, replaced during the run only: the request does not change";
+        } else if (row.target == ParameterTarget::jsonField) {
+          help =
+              "The values of the JSON body selected by this JSONPath ($.user.name, items[*].id), replaced during the "
+              "run only: a string stays a string";
         } else if (row.added) {
           help = "A query parameter added for the run only: the request does not have it";
         } else if (omitted) {
           help = "A query parameter left out of the run: a normal Fetch keeps sending it";
-        } else if (row.queryParameter) {
+        } else if (row.target == ParameterTarget::queryParameter) {
           help = "A query parameter of the request: varied for the run only, a normal Fetch keeps sending its value";
         }
         ImGui::SetTooltip("%s", help);
@@ -961,11 +980,13 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
           structural = true;
         }
         if (!row.added && ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("%s", row.queryParameter ? "The value written in the request"
-                                                     : "The value of the environment or of the collection");
+          ImGui::SetTooltip("%s", row.target == ParameterTarget::queryParameter
+                                      ? "The value written in the request"
+                                      : "The value of the environment or of the collection");
         }
         for (std::size_t source = 0; source < kSourceNames.size(); ++source) {
-          if (static_cast<ValueSource>(source) == ValueSource::omitted && (!row.queryParameter || row.added)) {
+          if (static_cast<ValueSource>(source) == ValueSource::omitted &&
+              (row.target != ParameterTarget::queryParameter || row.added)) {
             continue;  // only a query parameter of the request can be left out
           }
           const bool selected = pParameter != nullptr && static_cast<std::size_t>(pParameter->source) == source;
@@ -977,9 +998,11 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
           pParameter->source = static_cast<ValueSource>(source);
           // A range starts valid, from what the row sends now when it fits.
           std::string_view current;
-          if (row.added) {
+          if (row.target == ParameterTarget::body || row.target == ParameterTarget::jsonField) {
+            current = row.defaultValue;
+          } else if (row.added) {
             current = pParameter->fixedValue;
-          } else if (row.queryParameter) {
+          } else if (row.target == ParameterTarget::queryParameter) {
             current = row.defaultValue;
           }
           SeedRange(*pParameter, current, NowUnixSeconds());
@@ -1037,9 +1060,10 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
         }
       }
 
-      // The cross leaves a query parameter out of the run (removes an added one), the plus sends it again.
+      // The cross leaves a query parameter out of the run (removes an added one or a body one), the plus sends it
+      // again.
       ImGui::TableSetColumnIndex(6);
-      if (row.queryParameter) {
+      if (row.target != ParameterTarget::variable) {
         if (pParameter != nullptr && pParameter->source == ValueSource::omitted) {
           if (IconButton("##restore", Icon::plus, "Send it again during the run") && !structural) {
             request.load->parameters.erase(request.load->parameters.begin() + row.parameter);
@@ -1067,7 +1091,7 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
     }
     ImGui::EndTable();
   }
-  drawPerfAddQuery(tab, request);
+  drawPerfAddRows(tab, request);
 
   // A dropped file: a data file for the row under the mouse, or the selected data file row; a collection otherwise.
   if (!perf.droppedPath.empty() && !structural) {
@@ -1091,32 +1115,66 @@ void App::drawPerfParameters(RequestTab& tab, Request& request) {
     parameter.fileFormat = FormatOfFile(dropped);
     perf.selectedRow = dropTarget;
     touch(pCollection);
-    toast(Concat({"Data file of '", row.name, "': ", parameter.filePath}));
+    toast(Concat({"Data file of '",
+                  row.target == ParameterTarget::body ? std::string_view{"Body"} : std::string_view(row.name),
+                  "': ", parameter.filePath}));
   }
 }
 
-void App::drawPerfAddQuery(RequestTab& tab, Request& request) {
+void App::drawPerfAddRows(RequestTab& tab, Request& request) {
   PerfTab& perf = *tab.perf;
   const Palette& pal = CurrentPalette();
   const float scale = ImGui::GetStyle().FontScaleDpi;
-  const ImVec2 size(ImGui::CalcTextSize("Query parameter").x + ImGui::GetFrameHeight() + (12.0F * scale),
-                    ImGui::GetFrameHeight());
-  ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(0, 0, 0, 0));
-  const bool clicked = ImGui::Button("##addQuery", size);
-  ImGui::PopStyleColor();
-  DrawItemIconLabel(Icon::plus, ImGui::GetFontSize(), "Query parameter", pal.textDim);
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Add a query parameter, sent during the run only: the request does not change");
-  }
-  if (!clicked) {
-    return;
-  }
+  // A frameless button with a plus: true when clicked.
+  const auto addButton = [&](const char* strId, std::string_view label, const char* tooltip) {
+    const ImVec2 size(
+        ImGui::CalcTextSize(label.data(), label.data() + label.size()).x + ImGui::GetFrameHeight() + (12.0F * scale),
+        ImGui::GetFrameHeight());
+    ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(0, 0, 0, 0));
+    const bool clicked = ImGui::Button(strId, size);
+    ImGui::PopStyleColor();
+    DrawItemIconLabel(Icon::plus, ImGui::GetFontSize(), label, pal.textDim);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("%s", tooltip);
+    }
+    return clicked;
+  };
   LoadParameter parameter;
-  parameter.queryParameter = true;
+  if (addButton("##addQuery", "Query parameter",
+                "Add a query parameter, sent during the run only: the request does not change")) {
+    parameter.target = ParameterTarget::queryParameter;
+  }
+  // The body: when the request has a text one, and does not vary it whole already.
+  const bool textBody = request.bodyMode != BodyMode::none && request.bodyMode != BodyMode::formUrlEncoded;
+  if (textBody &&
+      std::ranges::none_of(perf.rows, [](const LoadRow& row) { return row.target == ParameterTarget::body; })) {
+    ImGui::SameLine();
+    if (addButton("##addBody", "Body", "Vary the whole body during the run: the request does not change")) {
+      parameter.target = ParameterTarget::body;
+      // Its values start from the body as written: one line is a first value of a list.
+      if (View(request.body).contains('\n')) {
+        parameter.fixedValue = request.body;
+      } else {
+        parameter.source = ValueSource::list;
+        parameter.listValues = request.body;
+      }
+    }
+  }
+  if (request.bodyMode == BodyMode::json) {
+    ImGui::SameLine();
+    if (addButton("##addJsonField", "JSON field",
+                  "Vary the values of the JSON body selected by a JSONPath ($.user.name, items[*].id) during the "
+                  "run: the request does not change")) {
+      parameter.target = ParameterTarget::jsonField;
+    }
+  }
+  if (parameter.target == ParameterTarget::variable) {
+    return;  // nothing clicked
+  }
+  perf.focusAddedName = parameter.target != ParameterTarget::body;
   EnsureLoad(request).parameters.push_back(std::move(parameter));
   // Its row comes last: the parameters matching none of the request come after the others, in their order.
   perf.selectedRow = perf.rows.size();
-  perf.focusAddedName = true;
   touch(collectionOf(tab));
 }
 
@@ -1136,7 +1194,7 @@ void App::drawPerfRowEditor(RequestTab& tab, Request& request) {
   if (row.parameter == LoadRow::kNoParameter || !request.load) {
     TextDim(FormatTo(buffer, "{}:", std::string_view(row.name)));
     ImGui::SameLine();
-    if (row.queryParameter) {
+    if (row.target == ParameterTarget::queryParameter) {
       TextDim(FormatTo(buffer, "sends '{}', as written in the request. Choose a source to vary it for the run.",
                        std::string_view(row.defaultValue)));
     } else if (row.undefined) {
@@ -1150,7 +1208,8 @@ void App::drawPerfRowEditor(RequestTab& tab, Request& request) {
   LoadParameter& parameter = request.load->parameters[row.parameter];
   const float fieldWidth = 160.0F * scale;
   bool changed = false;
-  SectionTitle(FormatTo(buffer, "{} \xC2\xB7 {}", std::string_view(row.name),
+  SectionTitle(FormatTo(buffer, "{} \xC2\xB7 {}",
+                        row.target == ParameterTarget::body ? std::string_view{"Body"} : std::string_view(row.name),
                         kSourceNames[static_cast<std::size_t>(parameter.source)]));
   const auto number = [&](const char* label, ImGuiDataType type, void* pValue, bool sameLine, const char* format) {
     if (sameLine) {
@@ -1547,6 +1606,9 @@ void App::drawPerfDashboard(PerfTab& perf) {
   if (!snapshot.setupError.empty()) {
     TextColored(pal.danger, FormatTo(buffer, "The run could not start: {}", std::string_view(snapshot.setupError)));
   }
+  if (!snapshot.stopReason.empty()) {
+    TextColored(pal.danger, FormatTo(buffer, "The run stopped. {}.", std::string_view(snapshot.stopReason)));
+  }
   if (snapshot.clientSaturated) {
     TextColored(pal.warning, FormatTo(buffer,
                                       "The client is saturated (CPU {:.0f} %): these numbers measure Zalie more than "
@@ -1562,9 +1624,21 @@ void App::drawPerfDashboard(PerfTab& perf) {
         snapshot.baselineP50Ns == 0
             ? std::string_view{"none yet"}
             : FormatChartValue(ChartUnit::nanoseconds, static_cast<double>(snapshot.baselineP50Ns), other);
-    const std::string_view line = FormatTo(
-        buffer, "Adaptive rate: {}  \xC2\xB7  target {} req/s  \xC2\xB7  baseline p50 {}", state, target, baseline);
-    if (snapshot.rateState == RateState::backOff || snapshot.rateState == RateState::clientLimited) {
+    // The bisection in progress, if any.
+    std::array<char, 80> range{};
+    std::string_view between;
+    if (snapshot.searchHighRequestsPerSecond > 0.0) {
+      std::array<char, 32> low{};
+      std::array<char, 32> high{};
+      between = FormatTo(range, "  \xC2\xB7  between {} and {} req/s",
+                         FormatChartValue(ChartUnit::count, snapshot.searchLowRequestsPerSecond, low),
+                         FormatChartValue(ChartUnit::count, snapshot.searchHighRequestsPerSecond, high));
+    }
+    const std::string_view line =
+        FormatTo(buffer, "Adaptive rate: {}  \xC2\xB7  target {} req/s  \xC2\xB7  baseline p50 {}{}", state, target,
+                 baseline, between);
+    if (snapshot.rateState == RateState::backOff || snapshot.rateState == RateState::failing ||
+        snapshot.rateState == RateState::clientLimited) {
       TextColored(pal.warning, line);
     } else {
       TextDim(line);
@@ -1713,7 +1787,7 @@ void App::drawPerfDashboard(PerfTab& perf) {
          .valueSuffix = " responses",
          .markers = snapshot.total.count == 0 ? std::span<const ChartMarker>{} : std::span<const ChartMarker>(markers),
          .x = {.unit = ChartUnit::nanoseconds, .scale = ChartScale::log},
-         .y = {.unit = ChartUnit::count},
+         .y = {.unit = ChartUnit::count, .label = "responses"},
          .height = chartHeight,
          .style = ChartStyle::bars});
     const std::array curveSeries{ChartSeries{.name = "Response time",
