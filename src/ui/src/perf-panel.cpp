@@ -31,6 +31,7 @@
 #include "zalie/load-runner.hpp"
 #include "zalie/load-settings.hpp"
 #include "zalie/method.hpp"
+#include "zalie/rate-controller.hpp"
 #include "zalie/raw-chars.hpp"
 #include "zalie/request.hpp"
 #include "zalie/resolved-request.hpp"
@@ -65,6 +66,13 @@ constexpr std::array<const char*, 3> kCombineNames{"Independent", "Together", "A
 constexpr std::array<const char*, 3> kTimestampNames{"Unix seconds", "Unix milliseconds", "ISO 8601"};
 constexpr std::array<const char*, 3> kFileFormatNames{"Text, one value per line", "CSV with a header", "JSON Lines"};
 constexpr std::array<const char*, PerfCharts::kNbLatencySeries> kLatencyNames{"p50", "p90", "p99", "max"};
+// Indexed by RateState.
+constexpr std::array<std::string_view, 6> kRateStates{"ramping up",
+                                                      "probing by small steps",
+                                                      "holding, the response times rise",
+                                                      "backing off, the server is overloaded",
+                                                      "limited by the connections, more of them would go faster",
+                                                      "at its maximum"};
 
 struct TimeUnit {
   const char* name;
@@ -237,7 +245,7 @@ void Tile(std::string_view label, std::string_view value, std::string_view detai
 void PrepareCharts(PerfCharts& charts, const LoadSnapshot& snapshot) {
   const auto nbPoints = static_cast<std::uint32_t>(snapshot.series.size());
   charts.times.resize(nbPoints);
-  charts.rates.resize(static_cast<std::uint32_t>(kNbLoadClasses) * nbPoints);
+  charts.rates.resize(static_cast<std::uint32_t>(kNbLoadClasses + 1) * nbPoints);
   charts.latencies.resize(PerfCharts::kNbLatencySeries * nbPoints);
   for (std::uint32_t idx = 0; idx < nbPoints; ++idx) {
     const LoadSecond& point = snapshot.series[idx];
@@ -246,6 +254,8 @@ void PrepareCharts(PerfCharts& charts, const LoadSnapshot& snapshot) {
     for (std::uint32_t outcome = 0; outcome < kNbLoadClasses; ++outcome) {
       charts.rates[(outcome * nbPoints) + idx] = static_cast<float>(point.counts[outcome]) / seconds;
     }
+    charts.rates[(kNbLoadClasses * nbPoints) + idx] =
+        point.targetRate != 0 ? static_cast<float>(point.targetRate) : std::numeric_limits<float>::quiet_NaN();
     // Errors have no response time.
     const bool responses = point.requests() != point.counts[kErrorClass];
     const std::array<std::uint64_t, PerfCharts::kNbLatencySeries> values{point.p50Ns, point.p90Ns, point.p99Ns,
@@ -704,8 +714,44 @@ void App::drawPerfSettings(RequestTab& tab, Request& request) {
   integer("Max requests", "##maxRequests", &LoadSettings::maxRequests, ImGuiDataType_U64,
           "The run ends after this number of requests, warm-up included. 0: no limit.");
   Flow(numberWidth * 2.0F, false);
+  const bool adaptive = LoadOf(request).adaptiveRate;
   integer("Max req/s", "##maxRate", &LoadSettings::maxRequestsPerSecond, ImGuiDataType_U32,
-          "The requests never go faster, whatever the number of connections. 0: no limit.");
+          adaptive ? "The adaptive rate never goes above this. 0: no maximum."
+                   : "The requests never go faster, whatever the number of connections. 0: no limit.");
+  Flow(numberWidth * 2.0F, false);
+  {
+    bool adaptiveRate = adaptive;
+    if (ImGui::Checkbox("Adaptive rate", &adaptiveRate)) {
+      EnsureLoad(request).adaptiveRate = adaptiveRate;
+      changed = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip(
+          "The rate starts at Min req/s and adapts to what the server sustains, about every 2 seconds:\n"
+          "it doubles while the response times stay close to their baseline, then rises by small steps,\n"
+          "holds when they rise, and backs off when requests fail (5xx, 429, no response) or the response\n"
+          "times explode. The connections still bound it: give it enough of them.");
+    }
+  }
+  if (adaptive) {
+    Flow(numberWidth * 2.0F, false);
+    integer("Min req/s", "##minRate", &LoadSettings::minRequestsPerSecond, ImGuiDataType_U32,
+            "The adaptive rate starts here, during the warm-up too, and never goes below: a rate the server surely "
+            "sustains. 0: 10.");
+    Flow(numberWidth * 2.0F, false);
+    InlineLabel("Max p99");
+    double maxP99Ms = LoadOf(request).maxP99Ms;
+    ImGui::SetNextItemWidth(numberWidth);
+    if (ImGui::InputDouble("##maxP99", &maxP99Ms, 0.0, 0.0, "%.1f ms")) {
+      EnsureLoad(request).maxP99Ms = std::clamp(maxP99Ms, 0.0, 3'600'000.0);
+      changed = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip(
+          "The adaptive rate backs off when the p99 of the response times exceeds this, and holds close to it. 0: no "
+          "cap, the baseline only.");
+    }
+  }
   Flow(numberWidth * 1.5F, false);
   {
     bool onePass = LoadOf(request).onePass;
@@ -762,11 +808,19 @@ void App::drawPerfPlan(RequestTab& tab, const Request& request) {
     const std::string_view passText = plan.passLength() == 0
                                           ? std::string_view{}
                                           : FormatTo(pass, "  \xC2\xB7  one pass: {} requests", plan.passLength());
+    std::array<char, 64> rate{};
+    std::string_view rateText;
+    if (options.adaptiveRate) {
+      const double start = RateController::StartRate(options.minRequestsPerSecond, options.maxRequestsPerSecond);
+      rateText = options.maxRequestsPerSecond != 0
+                     ? FormatTo(rate, "  \xC2\xB7  adaptive rate {:g} to {} req/s", start, options.maxRequestsPerSecond)
+                     : FormatTo(rate, "  \xC2\xB7  adaptive rate from {:g} req/s", start);
+    }
     if (planned != 0) {
-      TextDim(FormatTo(buffer, "Planned: {} requests on {} connections{}", planned, connections, passText));
+      TextDim(FormatTo(buffer, "Planned: {} requests on {} connections{}{}", planned, connections, rateText, passText));
     } else if (options.durationMs != 0) {
-      TextDim(
-          FormatTo(buffer, "Planned: {:g} s on {} connections{}", options.durationMs / 1000.0, connections, passText));
+      TextDim(FormatTo(buffer, "Planned: {:g} s on {} connections{}{}", options.durationMs / 1000.0, connections,
+                       rateText, passText));
     } else {
       TextColored(pal.warning, "No limit: the run goes on until you stop it.");
     }
@@ -1336,9 +1390,22 @@ void App::drawPerfDialogs(RequestTab& tab, const Request& request) {
     if (planned != 0) {
       Text(FormatTo(buffer, "This run sends up to {} {} requests to {}, on {} connections.", planned, method, host,
                     LoadConnections(options)));
+    } else if (options.adaptiveRate) {
+      Text(FormatTo(buffer, "This run sends {} requests to {} for {:g} s, on {} connections.", method, host,
+                    options.durationMs / 1000.0, LoadConnections(options)));
     } else {
       Text(FormatTo(buffer, "This run sends {} requests to {} for {:g} s, on {} connections, as fast as they go.",
                     method, host, options.durationMs / 1000.0, LoadConnections(options)));
+    }
+    if (options.adaptiveRate) {
+      const double start = RateController::StartRate(options.minRequestsPerSecond, options.maxRequestsPerSecond);
+      if (options.maxRequestsPerSecond != 0) {
+        Text(FormatTo(buffer, "Its rate starts at {:g} requests per second and adapts to the server, up to {}.", start,
+                      options.maxRequestsPerSecond));
+      } else {
+        Text(FormatTo(buffer, "Its rate starts at {:g} requests per second and adapts to the server, without maximum.",
+                      start));
+      }
     }
     if (!IsLocalHost(plan.host())) {
       TextColored(pal.warning, "It is not the local machine: load only servers you are allowed to.");
@@ -1487,6 +1554,23 @@ void App::drawPerfDashboard(PerfTab& perf) {
                                       snapshot.clientLoad * 100.0));
   }
 
+  const bool adaptive = snapshot.targetRequestsPerSecond > 0.0;
+  if (adaptive) {
+    const std::string_view state = kRateStates[static_cast<std::size_t>(snapshot.rateState)];
+    const std::string_view target = FormatChartValue(ChartUnit::count, snapshot.targetRequestsPerSecond, value);
+    const std::string_view baseline =
+        snapshot.baselineP50Ns == 0
+            ? std::string_view{"none yet"}
+            : FormatChartValue(ChartUnit::nanoseconds, static_cast<double>(snapshot.baselineP50Ns), other);
+    const std::string_view line = FormatTo(
+        buffer, "Adaptive rate: {}  \xC2\xB7  target {} req/s  \xC2\xB7  baseline p50 {}", state, target, baseline);
+    if (snapshot.rateState == RateState::backOff || snapshot.rateState == RateState::clientLimited) {
+      TextColored(pal.warning, line);
+    } else {
+      TextDim(line);
+    }
+  }
+
   // Key numbers.
   const std::uint64_t requests = snapshot.requests();
   const double share = requests == 0 ? 0.0 : 100.0 / static_cast<double>(requests);
@@ -1518,9 +1602,12 @@ void App::drawPerfDashboard(PerfTab& perf) {
                                                                         : FormatTo(errorText, "{:.1f} %", errorPercent);
   const std::array tiles{
       TileData{"Requests / s", count(rate),
-               keep(FormatTo(buffer, "mean {} \xC2\xB7 peak {}",
-                             FormatChartValue(ChartUnit::count, snapshot.meanRequestsPerSecond, value),
-                             FormatChartValue(ChartUnit::count, snapshot.peakRequestsPerSecond, other))),
+               adaptive ? keep(FormatTo(buffer, "sustained {} \xC2\xB7 peak {}",
+                                        FormatChartValue(ChartUnit::count, snapshot.sustainedRequestsPerSecond, value),
+                                        FormatChartValue(ChartUnit::count, snapshot.peakRequestsPerSecond, other)))
+                        : keep(FormatTo(buffer, "mean {} \xC2\xB7 peak {}",
+                                        FormatChartValue(ChartUnit::count, snapshot.meanRequestsPerSecond, value),
+                                        FormatChartValue(ChartUnit::count, snapshot.peakRequestsPerSecond, other))),
                pal.text},
       TileData{
           "Median (p50)", ns(snapshot.total.p50Ns),
@@ -1572,12 +1659,17 @@ void App::drawPerfDashboard(PerfTab& perf) {
   if (ImGui::BeginTable("##charts", twoColumns ? 2 : 1, ImGuiTableFlags_None)) {
     const auto nbPoints = static_cast<std::uint32_t>(charts.times.size());
     const std::span<const float> times(charts.times.data(), charts.times.size());
-    std::array<ChartSeries, kNbLoadClasses> rateSeries;
+    std::array<ChartSeries, kNbLoadClasses + 1> rateSeries;
     for (std::uint32_t outcome = 0; outcome < kNbLoadClasses; ++outcome) {
       rateSeries[outcome] = {.name = kClassNames[outcome],
                              .values = {charts.rates.data() + (std::size_t{outcome} * nbPoints), nbPoints},
                              .color = ClassColor(outcome)};
     }
+    // The target of the adaptive rate, over the stack.
+    rateSeries[kNbLoadClasses] = {.name = "Target",
+                                  .values = {charts.rates.data() + (kNbLoadClasses * nbPoints), nbPoints},
+                                  .color = pal.text,
+                                  .overlay = true};
     std::array<ChartSeries, PerfCharts::kNbLatencySeries> latencySeries;
     for (std::uint32_t series = 0; series < PerfCharts::kNbLatencySeries; ++series) {
       latencySeries[series] = {.name = kLatencyNames[series],
@@ -1586,7 +1678,8 @@ void App::drawPerfDashboard(PerfTab& perf) {
                                .reduce = ChartReduce::max};
     }
     ImGui::TableNextColumn();
-    Chart("##rates", times, rateSeries, charts.rateChart,
+    Chart("##rates", times, std::span<const ChartSeries>(rateSeries).first(kNbLoadClasses + (adaptive ? 1 : 0)),
+          charts.rateChart,
           {.title = "Requests per second, by status",
            .valueSuffix = " req/s",
            .x = {.unit = ChartUnit::seconds},

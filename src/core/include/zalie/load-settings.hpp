@@ -89,14 +89,21 @@ struct LoadSettings {
   // Equal seeds give equal requests, timestamps aside. 0: a new seed for each run.
   std::uint64_t seed{0};
   std::uint64_t maxRequests{0};
+  // Adaptive rate: the rate backs off when the p99 of a measure exceeds this. 0: no cap, the baseline only.
+  double maxP99Ms{0.0};
   std::uint32_t durationMs{kDefaultLoadDurationMs};
+  // With the adaptive rate: its maximum, 0 for none.
   std::uint32_t maxRequestsPerSecond{0};
+  // Adaptive rate: the rate it starts from and never goes below, assumed safe for the server. 0: 10.
+  std::uint32_t minRequestsPerSecond{0};
   std::uint32_t warmupMs{0};
   // 0: the number of vCPUs.
   std::uint32_t connections{0};
   CombineMode combine{CombineMode::independent};
   // Also ends the run after one pass over the values.
   bool onePass{false};
+  // The rate adapts to what the server sustains, between minRequestsPerSecond and maxRequestsPerSecond.
+  bool adaptiveRate{false};
 
   using trivially_relocatable = AllTriviallyRelocatable<amc::vector<LoadParameter>>;
 };

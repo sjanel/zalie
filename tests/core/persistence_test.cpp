@@ -83,6 +83,9 @@ TEST(Persistence, LoadSettingsRoundTrip) {
   settings.connections = 8;
   settings.combine = CombineMode::allCombinations;
   settings.onePass = true;
+  settings.adaptiveRate = true;
+  settings.minRequestsPerSecond = 20;
+  settings.maxP99Ms = 7.5;
   LoadParameter list;
   list.name.assign(std::string_view{"term"});
   list.source = ValueSource::list;
@@ -112,6 +115,8 @@ TEST(Persistence, LoadSettingsRoundTrip) {
   EXPECT_TRUE(json.contains("\"combine\": \"all-combinations\""));
   EXPECT_TRUE(json.contains("\"fileFormat\": \"json-lines\""));
   EXPECT_TRUE(json.contains("\"timestampFormat\": \"iso8601\""));
+  EXPECT_TRUE(json.contains("\"adaptiveRate\": true"));
+  EXPECT_TRUE(json.contains("\"maxP99Ms\": 7.5"));
   auto parsed = ParseCollection(json);
   ASSERT_TRUE(parsed.has_value()) << View(parsed.error());
   EXPECT_EQ(*parsed, collection);

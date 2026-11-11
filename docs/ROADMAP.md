@@ -47,6 +47,11 @@ GET {{base}}/search?q={{term}}&page={{page}}&user={{user}}     [Closed: 32 conne
   the requests per second. The tightest one wins: the run ends at the first limit reached, the rate never exceeds the
   cap in either model, and the planned volume (the minimum of them all) is shown before the run. A run can also be
   stopped by hand.
+- **Adaptive rate** (done, ahead of step 4): between a min and a max requests per second, the rate follows what the
+  server sustains, like a congestion control. It doubles while the response times stay close to their baseline (the
+  lowest of the healthy measures), rises by small steps after the first sign of load, holds when they rise, and backs
+  off on failures (`5xx`, `429`, no response), on response times far above their baseline, or above an optional p99
+  cap. The result is the sustained rate. The open model will take its arrival rate from the same controller.
 - Connections default to the number of vCPUs, which is also their limit unless raised in the settings: each one is a
   thread.
 - A warm-up period is excluded from the statistics. Later: ramp-up stages (rate or connections changing over time).

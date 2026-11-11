@@ -543,6 +543,34 @@ TEST_F(ChartTest, EveryStyleAndScaleDraws) {
   EXPECT_EQ(emptyState.nbPoints, 0U);
 }
 
+TEST_F(ChartTest, AnOverlayIsALineOverTheStack) {
+  const std::vector<float> target(x.size(), 1000.0F);
+  const ui::ChartOptions options{.height = 200, .style = ui::ChartStyle::stackedAreas};
+  ui::ChartState overlayState;
+  const auto drawWith = [&](bool overlay) {
+    const std::array series{
+        ui::ChartSeries{.name = "first", .values = first, .color = IM_COL32(200, 80, 60, 255)},
+        ui::ChartSeries{.name = "second", .values = second, .color = IM_COL32(60, 80, 200, 255)},
+        ui::ChartSeries{.name = "target", .values = target, .color = IM_COL32_WHITE, .overlay = true}};
+    windowFrame([&] {
+      ui::Chart("##overlay", x, std::span<const ui::ChartSeries>(series).first(overlay ? 3 : 2), overlayState, options);
+      rectMin = ImGui::GetItemRectMin();
+      rectMax = ImGui::GetItemRectMax();
+    });
+    EXPECT_EQ(LastFrameNonFiniteVertices(), 0);
+    return LastFrameVertices();
+  };
+  const int stackOnly = drawWith(false);
+  overlayState.invalidate();
+  const int withOverlay = drawWith(true);
+  EXPECT_GT(withOverlay, stackOnly);
+  // Hovered: the tooltip lists it, out of the total.
+  MouseMove(ImVec2((rectMin.x + rectMax.x) * 0.5F, (rectMin.y + rectMax.y) * 0.5F));
+  drawWith(true);
+  drawWith(true);
+  EXPECT_TRUE(TooltipShown());
+}
+
 TEST_F(ChartTest, MorePointsThanPixelsAreReducedOncePerChange) {
   x.clear();
   first.clear();

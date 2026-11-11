@@ -383,7 +383,7 @@ void Chart(const char* strId, std::span<const float> x, std::span<const ChartSer
         continue;
       }
       const float value = valueAt(idx, point);
-      if (options.style == ChartStyle::stackedAreas) {
+      if (options.style == ChartStyle::stackedAreas && !series[idx].overlay) {
         stacked += StackValue(value);
         continue;
       }
@@ -461,31 +461,33 @@ void Chart(const char* strId, std::span<const float> x, std::span<const ChartSer
                        pal.textDim, kNoData.data(), kNoData.data() + kNoData.size());
   }
   const float thickness = 1.5F * scale;
+  const auto drawLine = [&](std::size_t idx) {
+    state.scratch.clear();
+    const auto flush = [&] {
+      if (state.scratch.size() == 1) {
+        pDrawList->AddCircleFilled(state.scratch[0], thickness * 1.5F, series[idx].color);
+      } else if (state.scratch.size() > 1) {
+        pDrawList->AddPolyline(state.scratch.data(), static_cast<int>(state.scratch.size()), series[idx].color,
+                               thickness);
+      }
+      state.scratch.clear();
+    };
+    for (std::size_t point = 0; point < nbPoints; ++point) {
+      const float value = valueAt(idx, point);
+      if (std::isnan(value) || (options.y.scale == ChartScale::log && value <= 0.0F)) {
+        flush();
+        continue;
+      }
+      state.scratch.push_back(ImVec2(toX(pX[point]), toY(value)));
+    }
+    flush();
+  };
   switch (options.style) {
     case ChartStyle::lines:
       for (std::size_t idx = 0; idx < series.size(); ++idx) {
-        if (state.isHidden(idx)) {
-          continue;
+        if (!state.isHidden(idx)) {
+          drawLine(idx);
         }
-        state.scratch.clear();
-        const auto flush = [&] {
-          if (state.scratch.size() == 1) {
-            pDrawList->AddCircleFilled(state.scratch[0], thickness * 1.5F, series[idx].color);
-          } else if (state.scratch.size() > 1) {
-            pDrawList->AddPolyline(state.scratch.data(), static_cast<int>(state.scratch.size()), series[idx].color,
-                                   thickness);
-          }
-          state.scratch.clear();
-        };
-        for (std::size_t point = 0; point < nbPoints; ++point) {
-          const float value = valueAt(idx, point);
-          if (std::isnan(value) || (options.y.scale == ChartScale::log && value <= 0.0F)) {
-            flush();
-            continue;
-          }
-          state.scratch.push_back(ImVec2(toX(pX[point]), toY(value)));
-        }
-        flush();
       }
       break;
     case ChartStyle::stackedAreas: {
@@ -498,7 +500,7 @@ void Chart(const char* strId, std::span<const float> x, std::span<const ChartSer
           state.scratch.push_back(ImVec2(toX(pX[point]), 0.0F));
         }
         for (std::size_t idx = 0; idx < series.size(); ++idx) {
-          if (state.isHidden(idx)) {
+          if (state.isHidden(idx) || series[idx].overlay) {
             continue;
           }
           const ImU32 fill = WithAlpha(series[idx].color, kAreaAlpha);
@@ -523,6 +525,11 @@ void Chart(const char* strId, std::span<const float> x, std::span<const ChartSer
           }
         }
         pDrawList->PopDrawFlag();
+      }
+      for (std::size_t idx = 0; idx < series.size(); ++idx) {
+        if (series[idx].overlay && !state.isHidden(idx)) {
+          drawLine(idx);
+        }
       }
       break;
     }
@@ -621,8 +628,10 @@ void Chart(const char* strId, std::span<const float> x, std::span<const ChartSer
           continue;
         }
         const float value = valueAt(idx, point);
-        total += StackValue(value);
-        ++nbShown;
+        if (!series[idx].overlay) {
+          total += StackValue(value);
+          ++nbShown;
+        }
         const ImVec2 pos = ImGui::GetCursorScreenPos();
         DrawSwatch(ImGui::GetWindowDrawList(), ImVec2(pos.x, pos.y + (lineHeight * 0.15F)), swatch, series[idx].color);
         ImGui::Dummy(ImVec2(swatch, lineHeight));

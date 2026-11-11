@@ -50,6 +50,10 @@ constexpr std::size_t kClass3xx = static_cast<std::size_t>(LoadClass::status3xx)
 constexpr std::size_t kClass4xx = static_cast<std::size_t>(LoadClass::status4xx);
 constexpr std::size_t kClass5xx = static_cast<std::size_t>(LoadClass::status5xx);
 constexpr std::size_t kClassError = static_cast<std::size_t>(LoadClass::error);
+// Once /throttled receives more than this many requests in one second, it asks to slow down for good. Between the
+// minimum rate of the adaptive test and its double: only a raised rate gets there. At 100 per second, the send slots
+// are 10 ms apart and each connection holds at most one late request: at most 101 + 8 in one second.
+constexpr std::size_t kThrottleRate = 120;
 
 class LoadRunnerTest : public ::testing::Test {
  protected:
@@ -64,6 +68,15 @@ class LoadRunnerTest : public ::testing::Test {
       static constexpr std::array<aeronet::http::StatusCode, 5> kCodes = {200, 204, 302, 404, 500};
       const std::uint64_t hit = _hits.fetch_add(1, std::memory_order_relaxed);
       return req.makeResponse(kCodes[hit % kCodes.size()]);
+    });
+    // Overloaded by a rate: asks to slow down. The server has one thread: only this handler touches the hit times.
+    router.setPath(aeronet::http::Method::GET, "/throttled", [this](const aeronet::HttpRequestView& req) {
+      const std::uint64_t hit = _hits.fetch_add(1, std::memory_order_relaxed);
+      const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+      std::chrono::steady_clock::time_point& hitTime = _hitTimes[hit % kThrottleRate];  // of 'hit - kThrottleRate'
+      _throttling = _throttling || (hit >= kThrottleRate && now - hitTime < 1s);
+      hitTime = now;
+      return _throttling ? req.makeResponse(429) : req.makeResponse(200, kBody, "text/plain");
     });
     router.setPath(aeronet::http::Method::POST, "/capture", [this](const aeronet::HttpRequestView& req) {
       {
@@ -127,6 +140,7 @@ class LoadRunnerTest : public ::testing::Test {
 
   std::unique_ptr<aeronet::SingleHttpServer> _server;
   std::atomic<std::uint64_t> _hits{0};
+  std::array<std::chrono::steady_clock::time_point, kThrottleRate> _hitTimes{};
   std::mutex _capturedMutex;
   std::string _capturedBody;
   std::string _capturedHeader;
@@ -134,11 +148,23 @@ class LoadRunnerTest : public ::testing::Test {
   std::string _capturedUserAgent;
   std::vector<std::string> _seen;
   std::uint16_t _port{0};
+  bool _throttling{false};
 };
 
 // A run bounded by its number of requests only.
 LoadOptions RequestsOnly(std::uint64_t maxRequests, std::uint32_t connections) {
   return {.maxRequests = maxRequests, .durationMs = 0, .connections = connections, .maxConnections = connections};
+}
+
+// The time series of a run, to explain a failure on a machine that only the CI has: per second, the target rate, the
+// requests and their median response time.
+std::string DescribeSeries(const LoadSnapshot& snapshot) {
+  std::string text = "series (target rate / requests / p50 us):";
+  for (const LoadSecond& point : snapshot.series) {
+    text += ' ' + std::to_string(point.targetRate) + '/' + std::to_string(point.requests()) + '/' +
+            std::to_string(point.p50Ns / 1000);
+  }
+  return text;
 }
 
 TEST(LoadConnectionsTest, DefaultsToTheNumberOfVCpusWhichIsAlsoTheLimit) {
@@ -207,6 +233,58 @@ TEST_F(LoadRunnerTest, TheRateCapHoldsAcrossTheConnections) {
       makeRequest("/ok"), {.durationMs = 500, .maxRequestsPerSecond = 100, .connections = 4, .maxConnections = 4});
   EXPECT_LE(snapshot->requests(), 51U);
   EXPECT_GE(snapshot->requests(), 25U);
+  EXPECT_DOUBLE_EQ(snapshot->targetRequestsPerSecond, 0.0);  // a fixed rate
+  ASSERT_FALSE(snapshot->series.empty());
+  EXPECT_EQ(snapshot->series[0].targetRate, 0U);
+}
+
+TEST_F(LoadRunnerTest, TheAdaptiveRateRisesWhileHealthyAndBacksOffWhenThrottled) {
+  // 100 requests per second, doubled after a healthy measure: the server asks to slow down (429) from then on, the rate
+  // backs off to 100. The second at 200 is usually the third one, but a busy machine can miss the rate of a measure
+  // (client limited, measured again) or see slower responses (small steps): the run lasts until the back off. Enough
+  // connections to reach the rates even when the sleeps or the responses take tens of milliseconds (macOS runners).
+  LoadRunner runner(
+      makeRequest("/throttled"),
+      {.durationMs = 40000, .minRequestsPerSecond = 100, .connections = 8, .maxConnections = 8, .adaptiveRate = true});
+  const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + 30s;
+  std::shared_ptr<const LoadSnapshot> snapshot = runner.snapshot();
+  while ((snapshot->rateState != RateState::backOff || snapshot->statuses.empty() ||
+          snapshot->statuses.back().status != 429) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(20ms);
+    snapshot = runner.snapshot();
+  }
+  runner.stop();
+  ASSERT_TRUE(runner.waitForCompletion(10s));
+  snapshot = runner.snapshot();
+  SCOPED_TRACE(DescribeSeries(*snapshot) + ", server hits " + std::to_string(hits()) + ", measured " +
+               std::to_string(snapshot->requests()));
+  ASSERT_FALSE(snapshot->series.empty());
+  EXPECT_EQ(snapshot->series.front().targetRate, 100U);
+  EXPECT_TRUE(std::ranges::any_of(snapshot->series, [](const LoadSecond& point) { return point.targetRate > 100; }));
+  // Throttled: the connections followed the raised rate, a rate of 100 never gets there.
+  ASSERT_FALSE(snapshot->statuses.empty());
+  EXPECT_EQ(snapshot->statuses.back().status, 429);
+  EXPECT_DOUBLE_EQ(snapshot->targetRequestsPerSecond, 100.0);
+  EXPECT_EQ(snapshot->rateState, RateState::backOff);
+  EXPECT_GE(snapshot->sustainedRequestsPerSecond, 95.0);   // reached before raising the rate
+  EXPECT_LT(snapshot->sustainedRequestsPerSecond, 200.0);  // the doubled rate was not healthy
+  EXPECT_GT(snapshot->baselineP50Ns, 0U);
+}
+
+TEST(LoadOptions, TheAdaptiveRateComesFromTheSettings) {
+  LoadSettings settings;
+  settings.adaptiveRate = true;
+  settings.minRequestsPerSecond = 50;
+  settings.maxRequestsPerSecond = 5000;
+  settings.maxP99Ms = 12.5;
+  const LoadOptions options = MakeLoadOptions(settings);
+  EXPECT_TRUE(options.adaptiveRate);
+  EXPECT_EQ(options.minRequestsPerSecond, 50U);
+  EXPECT_EQ(options.maxRequestsPerSecond, 5000U);
+  EXPECT_EQ(options.maxP99Ns, 12'500'000U);
+  settings.maxP99Ms = -1.0;
+  EXPECT_EQ(MakeLoadOptions(settings).maxP99Ns, 0U);
 }
 
 TEST_F(LoadRunnerTest, TheWaitOfTheRateCapIsNotALatency) {

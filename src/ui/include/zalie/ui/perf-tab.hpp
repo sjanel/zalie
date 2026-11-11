@@ -83,7 +83,8 @@ struct PerfCharts {
 
   // End of each point of the time series, in seconds since the end of the warm-up.
   amc::vector<float> times;
-  // Requests per second of each class of outcome: kNbLoadClasses series of times.size() values.
+  // Requests per second of each class of outcome, then the target of the adaptive rate (NaN for a fixed rate):
+  // kNbLoadClasses + 1 series of times.size() values.
   amc::vector<float> rates;
   // p50, p90, p99 and max of each point, in ns: kNbLatencySeries series of times.size() values.
   amc::vector<float> latencies;
